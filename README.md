@@ -102,6 +102,17 @@ Cette version inclut :
 - parsing complet de `/proc` et `/sys`  
 
 ---
+## 📸 Captures d’écran
+
+Voici un aperçu du moniteur système ARM64 en action, exécuté sur un Raspberry Pi 4B via un terminal Termux sur smartphone (connexion SSH).
+
+<p align="center">
+  <img src="docs/screenshots/termux_raspi4b_v1.9.jpg" width="480">
+</p>
+
+<p align="center"><em>Affichage en temps réel : température, fréquence CPU, charge, RAM, load average et état électrique.</em></p>
+
+---
 
 ## 🎧 Fichiers audio explicatifs
 
