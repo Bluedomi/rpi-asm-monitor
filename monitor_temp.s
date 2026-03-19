@@ -1,36 +1,36 @@
 /*
  * ======================================================================================
  * Fichier     : monitor_temp.s
- * Version     : 1.9
- * Date        : 2026-03-14
+ * Version     : 2.2
+ * Date        : 2026-03-19
  * Auteur      : /B4SH 😎
  * --------------------------------------------------------------------------------------
  * LANGAGE     : ASSEMBLEUR AArch64 (ARMv8-A)
  * DESCRIPTION : Monitoring système temps réel pour Raspberry Pi 4B
- * * Compilation :
+ *               Version refactorisée avec routines factorisées.
+ * Compilation :
  * $ as -o monitor_temp.o monitor_temp.s
  * $ gcc -nostdlib -static -o monitor-temp-ASM monitor_temp.o
  * $ strip monitor-temp-ASM
- * * Just for fun ! 😎
  * ======================================================================================
  */
 
-// .set SHOW_FREQ, 1 // Commenter = désactiver // old fashion
+// Options de compilation
 .equ SHOW_FREQ,     1  // 1 pour activer, 0 pour désactiver
 .equ SHOW_THERMO,   1
 
 .global _start
 
-    .equ SYS_OPENAT,         56
-    .equ SYS_READ,           63
-    .equ SYS_WRITE,          64
-    .equ SYS_CLOSE,          57
-    .equ SYS_NANOSLEEP,     101
-    .equ SYS_EXIT,           93
-    .equ SYS_CLOCK_GETTIME, 113
-    .equ SYS_SYSINFO,       179
+// Syscalls (constantes)
+.equ SYS_OPENAT,         56
+.equ SYS_READ,           63
+.equ SYS_WRITE,          64
+.equ SYS_CLOSE,          57
+.equ SYS_NANOSLEEP,     101
+.equ SYS_EXIT,           93
+.equ SYS_CLOCK_GETTIME, 113
 
-    .section .data
+.section .data
 
 // Chaînes constantes
 str_cyan:       .asciz "\033[36m"
@@ -46,7 +46,6 @@ str_reset:      .asciz "\033[0m"
 .equ str_color_5m,   str_blue
 .equ str_color_15m,  str_blue
 
-//str_freq:       .asciz "Freq:"
 str_freq:       .asciz "F:"
 str_load:       .asciz "L:"
 str_ram:        .asciz "M:"
@@ -60,7 +59,7 @@ str_percent:    .asciz "%"
 str_1m:         .asciz "1m:"
 str_5m:         .asciz "5m:"
 str_15m:        .asciz "15m:"
-str_utc:        .asciz " UTC] "
+str_utc:        .asciz " UTC]"
 
 // Fichiers
 filepath_temp:
@@ -99,7 +98,7 @@ sleep_ts:
     .quad 1
     .quad 0
 
-    .balign 16
+.balign 16
 timespec:
     .quad 0
     .quad 0
@@ -112,7 +111,7 @@ prev_total:
 first_stat:
     .quad 1
 
-    .section .text
+.section .text
 
 // -------------------------------------------------------------------
 // copy_str : copie une chaîne ASCIIZ de x0 vers (x2), met à jour x2
@@ -125,291 +124,324 @@ copy_str:
 1:  ret
 
 // -------------------------------------------------------------------
+// read_file : ouvre, lit et ferme un fichier, ajoute '\0' si possible
+// Entrée : x0 = chemin, x1 = buffer, x2 = taille max
+// Sortie : x0 = nombre d'octets lus, ou -1 si erreur
+// -------------------------------------------------------------------
+read_file:
+    stp x4, x5, [sp, #-16]!   // sauvegarde x4, x5
+    mov x4, x1                 // sauve buffer
+    mov x5, x2                 // sauve taille
+    // openat
+    mov x1, x0                 // chemin
+    mov x0, #-100              // AT_FDCWD
+    mov x2, #0
+    mov x3, #0
+    mov x8, #SYS_OPENAT
+    svc 0
+    cmp x0, #0
+    blt .Lread_err             // erreur open
+    mov x3, x0                 // fd
+    // read
+    mov x0, x3
+    mov x1, x4                 // buffer
+    mov x2, x5                 // taille max
+    mov x8, #SYS_READ
+    svc 0
+    cmp x0, #0
+    blt .Lread_err_close       // erreur lecture
+    mov x6, x0                 // taille lue
+    // close
+    mov x0, x3
+    mov x8, #SYS_CLOSE
+    svc 0
+    // ajouter null-terminateur si place
+    cmp x6, x5
+    b.ge .Lread_no_null
+    add x1, x4, x6
+    strb wzr, [x1]            // '\0'
+.Lread_no_null:
+    mov x0, x6                 // retour taille lue
+    ldp x4, x5, [sp], #16
+    ret
+.Lread_err_close:
+    mov x0, x3
+    mov x8, #SYS_CLOSE
+    svc 0
+.Lread_err:
+    mov x0, #-1
+    ldp x4, x5, [sp], #16
+    ret
+
+// -------------------------------------------------------------------
+// parse_uint : convertit une chaîne décimale en entier 64 bits
+// Entrée : x0 = pointeur début du nombre
+// Sortie : x0 = valeur, x1 = pointeur après le nombre
+// -------------------------------------------------------------------
+parse_uint:
+    mov x5, #0                 // accumulateur
+    mov x6, x0                 // pointeur courant
+1:
+    ldrb w7, [x6], #1
+    cmp w7, #'0'
+    blt 2f
+    cmp w7, #'9'
+    bgt 2f
+    sub w7, w7, #'0'
+    uxtw x7, w7
+    add x5, x5, x5, lsl #2     // x5 = x5 * 5
+    lsl x5, x5, #1             // x5 = x5 * 10
+    add x5, x5, x7
+    b 1b
+2:
+    sub x6, x6, #1
+    mov x0, x5
+    mov x1, x6
+    ret
+
+// -------------------------------------------------------------------
+// parse_hex : convertit une chaîne hexadécimale (sans préfixe) en entier 64 bits
+// Entrée : x0 = pointeur début du nombre
+// Sortie : x0 = valeur, x1 = pointeur après le nombre
+// -------------------------------------------------------------------
+parse_hex:
+    mov x5, #0
+    mov x6, x0
+1:
+    ldrb w7, [x6], #1
+    cmp w7, #'0'
+    blt 2f
+    cmp w7, #'9'
+    ble .Ldigit
+    cmp w7, #'A'
+    blt 2f
+    cmp w7, #'F'
+    ble .Lupper
+    cmp w7, #'a'
+    blt 2f
+    cmp w7, #'f'
+    ble .Llower
+    b 2f
+.Ldigit:
+    sub w7, w7, #'0'
+    b .Lstore
+.Lupper:
+    sub w7, w7, #'A'
+    add w7, w7, #10
+    b .Lstore
+.Llower:
+    sub w7, w7, #'a'
+    add w7, w7, #10
+.Lstore:
+    uxtw x7, w7
+    lsl x5, x5, #4
+    add x5, x5, x7
+    b 1b
+2:
+    sub x6, x6, #1
+    mov x0, x5
+    mov x1, x6
+    ret
+
+// -------------------------------------------------------------------
+// uint_to_str : convertit un entier 64 bits en chaîne décimale
+// Entrée : x0 = valeur, x2 = pointeur buffer (sera mis à jour)
+// Sortie : x2 pointe après le dernier caractère écrit
+// -------------------------------------------------------------------
+uint_to_str:
+    sub sp, sp, #32            // réserve 32 octets sur la pile
+    mov x3, sp                 // début de la zone
+    mov x4, x0                 // valeur
+    mov x5, #10
+    mov x6, #0                 // compteur de chiffres
+
+    // Cas particulier : valeur == 0
+    cbnz x4, 1f
+    mov w8, '0'
+    strb w8, [x2], #1
+    add sp, sp, #32
+    ret
+
+1:
+    udiv x7, x4, x5
+    msub x8, x7, x5, x4        // reste
+    add w8, w8, '0'
+    strb w8, [x3, x6]          // stocke dans l'ordre inverse
+    add x6, x6, #1
+    mov x4, x7
+    cbnz x4, 1b
+
+    // maintenant x6 = nombre de chiffres
+    add x3, x3, x6
+    sub x3, x3, #1             // pointe sur le dernier caractère stocké
+2:
+    ldrb w8, [x3], #-1
+    strb w8, [x2], #1
+    subs x6, x6, #1
+    b.ne 2b
+
+    add sp, sp, #32
+    ret
+
+// -------------------------------------------------------------------
 // Programme principal
 // -------------------------------------------------------------------
 _start:
-
+    // boucle infinie
 loop:
     // -------------------------------------------------------------
-    // 1. Lecture température CPU
+    // 1. Température CPU
     // -------------------------------------------------------------
-    mov  x0, #-100
-    adrp x1, filepath_temp
-    add  x1, x1, :lo12:filepath_temp
-    mov  x2, #0
-    mov  x3, #0
-    mov  x8, #SYS_OPENAT
-    svc  #0
-    mov  x9, x0
-
-    mov  x0, x9
+    adrp x0, filepath_temp
+    add  x0, x0, :lo12:filepath_temp
     adrp x1, buffer
     add  x1, x1, :lo12:buffer
     mov  x2, #16
-    mov  x8, #SYS_READ
-    svc  #0
-    mov  x10, x0
+    bl   read_file
+    cmp  x0, #3
+    b.lt loop                     // si fichier invalide, on recommence
 
-    mov  x0, x9
-    mov  x8, #SYS_CLOSE
-    svc  #0
+    adrp x0, buffer
+    add  x0, x0, :lo12:buffer
+    bl   parse_uint
+    mov  x3, x0                   // x3 = température en milli°C
 
-    cmp  x10, #3
-    b.lt loop
+    // calcul degrés et dixièmes
+    mov  x5, #1000
+    udiv x6, x3, x5               // x6 = degrés entiers
+    msub x7, x6, x5, x3
+    mov  x5, #100
+    udiv x8, x7, x5               // x8 = dixièmes
+
+    // Sauvegarde des valeurs de température (registres préservés)
+    mov x24, x6
+    mov x25, x8
 
     // -------------------------------------------------------------
-    // 2. Lecture throttling
+    // 2. Under‑voltage (throttled)
     // -------------------------------------------------------------
-    mov  x0, #-100
-    adrp x1, filepath_throttled
-    add  x1, x1, :lo12:filepath_throttled
-    mov  x2, #0
-    mov  x3, #0
-    mov  x8, #SYS_OPENAT
-    svc  #0
-    mov  x11, x0
-
-    cmp  x11, #0
-    b.lt  no_throttle_file
-
-    mov  x0, x11
+    mov  x20, #-1                  // par défaut : inconnu
+    adrp x0, filepath_throttled
+    add  x0, x0, :lo12:filepath_throttled
     adrp x1, buffer_thr
     add  x1, x1, :lo12:buffer_thr
     mov  x2, #16
-    mov  x8, #SYS_READ
-    svc  #0
-    mov  x12, x0
+    bl   read_file
+    cmp  x0, #0
+    blt  throttle_done
 
-    mov  x0, x11
-    mov  x8, #SYS_CLOSE
-    svc  #0
-
-    adrp x1, buffer_thr
-    add  x1, x1, :lo12:buffer_thr
-    mov  x13, #0
-parse_throttle:
-    ldrb w2, [x1], #1
-    cmp  w2, #'0'
-    b.lt  end_parse
-    cmp  w2, #'9'
-    b.le digit
-    cmp  w2, #'A'
-    b.lt end_parse
-    cmp  w2, #'F'
-    b.le hex_upper
-    cmp  w2, #'a'
-    b.lt end_parse
-    cmp  w2, #'f'
-    b.le hex_lower
-    b    end_parse
-digit:
-    sub  w2, w2, #'0'
-    b    store
-hex_upper:
-    sub  w2, w2, #'A'
-    add  w2, w2, #10
-    b    store
-hex_lower:
-    sub  w2, w2, #'a'
-    add  w2, w2, #10
-store:
-    lsl  x13, x13, #4
-    add  x13, x13, x2
-    b    parse_throttle
-end_parse:
-    ands x13, x13, #1
+    adrp x0, buffer_thr
+    add  x0, x0, :lo12:buffer_thr
+    bl   parse_hex
+    ands x13, x0, #1
     b.eq voltage_ok
     mov  x20, #1
-    b    voltage_done
+    b    throttle_done
 voltage_ok:
     mov  x20, #0
-    b    voltage_done
-
-no_throttle_file:
-    mov  x20, #-1
-
-voltage_done:
-    // x20 = 1 (under‑voltage), 0 (OK), -1 (inconnu)
+throttle_done:
 
     // -------------------------------------------------------------
-    // 3. Lecture fréquence CPU
+    // 3. Fréquence CPU
     // -------------------------------------------------------------
-    mov  x0, #-100
-    adrp x1, filepath_freq
-    add  x1, x1, :lo12:filepath_freq
-    mov  x2, #0
-    mov  x3, #0
-    mov  x8, #SYS_OPENAT
-    svc  #0
-    mov  x14, x0
-
-    cmp  x14, #0
-    b.lt  no_freq_file
-
-    mov  x0, x14
+    mov  x18, #-1                  // par défaut : absent
+    adrp x0, filepath_freq
+    add  x0, x0, :lo12:filepath_freq
     adrp x1, buffer_freq
     add  x1, x1, :lo12:buffer_freq
     mov  x2, #16
-    mov  x8, #SYS_READ
-    svc  #0
-    mov  x15, x0
+    bl   read_file
+    cmp  x0, #0
+    blt  freq_done
 
-    mov  x0, x14
-    mov  x8, #SYS_CLOSE
-    svc  #0
+    adrp x0, buffer_freq
+    add  x0, x0, :lo12:buffer_freq
+    bl   parse_uint
+    mov  x16, x0                   // valeur en kHz
 
-    adrp x1, buffer_freq
-    add  x1, x1, :lo12:buffer_freq
-    mov  x16, #0
-freq_parse:
-    ldrb w2, [x1], #1
-    cmp  w2, #'0'
-    b.lt freq_done_parse
-    cmp  w2, #'9'
-    b.gt freq_done_parse
-    sub  w2, w2, #'0'
-    uxtw x2, w2                    // CORRIGÉ : extension
-    add  x16, x16, x16, lsl #2
-    lsl  x16, x16, #1
-    add  x16, x16, x2
-    b    freq_parse
-freq_done_parse:
     mov  x17, #1000
-    udiv x18, x16, x17
+    udiv x18, x16, x17             // MHz entiers
     msub x19, x18, x17, x16
     mov  x17, #100
-    udiv x21, x19, x17
-    b    freq_done
-
-no_freq_file:
-    mov  x18, #-1
-
+    udiv x21, x19, x17             // dixièmes
 freq_done:
-    // x18 = MHz entiers, x21 = dixième
 
     // -------------------------------------------------------------
-    // 4. Lecture loadavg (/proc/loadavg)
+    // 4. Load average
     // -------------------------------------------------------------
-    mov  x0, #-100
-    adrp x1, filepath_loadavg
-    add  x1, x1, :lo12:filepath_loadavg
-    mov  x2, #0
-    mov  x3, #0
-    mov  x8, #SYS_OPENAT
-    svc  #0
-    mov  x25, x0
-
-    cmp  x25, #0
-    b.lt load_fail
-
-    mov  x0, x25
+    mov  x27, #0
+    adrp x0, filepath_loadavg
+    add  x0, x0, :lo12:filepath_loadavg
     adrp x1, buffer_load
     add  x1, x1, :lo12:buffer_load
     mov  x2, #64
-    mov  x8, #SYS_READ
-    svc  #0
-    mov  x26, x0
-
-    mov  x0, x25
-    mov  x8, #SYS_CLOSE
-    svc  #0
-
-    cmp  x26, #4
-    b.lt load_fail
-
+    bl   read_file
+    cmp  x0, #4
+    blt  load_done
     mov  x27, #1
-    b    load_done
-
-load_fail:
-    mov  x27, #0
-
 load_done:
 
     // -------------------------------------------------------------
-    // 5. Lecture utilisation CPU (/proc/stat)
+    // 5. Utilisation CPU (via /proc/stat)
     // -------------------------------------------------------------
-    mov  x22, #0
-    mov  x0, #-100
-    adrp x1, filepath_stat
-    add  x1, x1, :lo12:filepath_stat
-    mov  x2, #0
-    mov  x3, #0
-    mov  x8, #SYS_OPENAT
-    svc  #0
-    mov  x28, x0
-
-    cmp  x28, #0
-    b.lt  skip_cpu_stat
-
-    mov  x0, x28
+    adrp x0, filepath_stat
+    add  x0, x0, :lo12:filepath_stat
     adrp x1, buffer_stat
     add  x1, x1, :lo12:buffer_stat
     mov  x2, #256
-    mov  x8, #SYS_READ
-    svc  #0
-    mov  x29, x0
+    bl   read_file
+    cmp  x0, #0
+    blt  skip_cpu_stat
 
-    mov  x0, x28
-    mov  x8, #SYS_CLOSE
-    svc  #0
+    adrp x0, buffer_stat
+    add  x0, x0, :lo12:buffer_stat
+    mov  x1, x0
+    // chercher "cpu "
+find_cpu:
+    ldrb w2, [x1], #1
+    cbz  w2, skip_cpu_stat
+    cmp  w2, #'c'
+    b.ne find_cpu
+    ldrb w2, [x1], #1
+    cmp  w2, #'p'
+    b.ne find_cpu
+    ldrb w2, [x1], #1
+    cmp  w2, #'u'
+    b.ne find_cpu
+    ldrb w2, [x1], #1
+    cmp  w2, #' '
+    b.ne find_cpu
+    // maintenant x1 pointe après l'espace
+skip_spaces:
+    ldrb w2, [x1], #1
+    cmp  w2, #' '
+    b.eq skip_spaces
+    sub  x1, x1, #1               // reculer sur le premier chiffre
 
-    adrp x1, buffer_stat
-    add  x1, x1, :lo12:buffer_stat
-
-    // Chercher le début des nombres après "cpu "
-    mov  x2, #0
-    mov  x3, #0
-    mov  x4, #0
-
+    // lire 8 nombres
     sub  sp, sp, #64
-    mov  x5, sp
-
-skip_header:
-    ldrb w0, [x1], #1
-    cmp  w0, #' '
-    b.ne skip_header
-
-parse_stat_loop:
-    ldrb w0, [x1], #1
-    cmp  w0, #0
-    b.eq end_stat_parse
-    cmp  w0, #'\n'
-    b.eq end_stat_parse
-    cmp  w0, #' '
-    b.eq space_found
-    cmp  w0, #'0'
-    b.lt parse_stat_loop
-    cmp  w0, #'9'
-    b.gt parse_stat_loop
-    sub  w0, w0, #'0'
-    uxtw x0, w0                    // CORRIGÉ : extension
-    cmp  x4, #0
-    b.eq new_number
-    ldr  x6, [x5, x2, lsl #3]
-    add  x6, x6, x6, lsl #2
-    lsl  x6, x6, #1
-    add  x6, x6, x0
-    str  x6, [x5, x2, lsl #3]
-    b    parse_stat_loop
-new_number:
-    mov  x4, #1
+    mov  x4, sp
+    mov  x2, #0                   // compteur
+parse_stat_numbers:
+    mov  x0, x1
+    bl   parse_uint
+    str  x0, [x4, x2, lsl #3]
+    add  x2, x2, #1
     cmp  x2, #8
-    b.ge parse_stat_loop
-    mov  x6, x0
-    str  x6, [x5, x2, lsl #3]
-    b    parse_stat_loop
-space_found:
-    cmp  x4, #1
-    b.ne parse_stat_loop
-    mov  x4, #0
-    add  x2, x2, #1
-    b    parse_stat_loop
-
-end_stat_parse:
-    cmp  x4, #1
-    b.ne 1f
-    add  x2, x2, #1
-1:
+    b.ge stat_done
+    // sauter espaces et retour chariot
+skip_to_next:
+    ldrb w5, [x1], #1
+    cmp  w5, #' '
+    b.eq skip_to_next
+    cmp  w5, #'\n'
+    b.eq stat_done
+    cmp  w5, #0
+    b.eq stat_done
+    sub  x1, x1, #1
+    b    parse_stat_numbers
+stat_done:
+    // charger les 8 valeurs
     ldr  x3, [sp, #0]
     ldr  x4, [sp, #8]
     ldr  x5, [sp, #16]
@@ -420,6 +452,7 @@ end_stat_parse:
     ldr  x10, [sp, #56]
     add  sp, sp, #64
 
+    // calcul total
     add  x11, x3, x4
     add  x11, x11, x5
     add  x11, x11, x6
@@ -441,14 +474,15 @@ end_stat_parse:
     add  x0, x0, :lo12:prev_total
     ldr  x13, [x0]
 
-    sub  x14, x6, x12
-    sub  x15, x11, x13
+    sub  x14, x6, x12             // delta idle
+    sub  x15, x11, x13            // delta total
     cbz  x15, cpu_stat_done
-    sub  x16, x15, x14
+    sub  x16, x15, x14            // temps actif
     mov  x17, #100
     mul  x16, x16, x17
     udiv x22, x16, x15
 
+    // mise à jour des précédents
     adrp x0, prev_idle
     add  x0, x0, :lo12:prev_idle
     str  x6, [x0]
@@ -471,48 +505,29 @@ store_first_stat:
     add  x0, x0, :lo12:first_stat
     str  xzr, [x0]
     mov  x22, #0
-
 cpu_stat_done:
 skip_cpu_stat:
 
-// -------------------------------------------------------------
-// 6. Lecture mémoire via /proc/meminfo (corrigée avec sauvegarde dans x23)
-// -------------------------------------------------------------
-mov  x30, #-1               // valeur par défaut
-mov  x23, #-1               // CORRIGÉ : initialisation de x23 (pourcentage RAM)
-mov  x0, #-100
-adrp x1, filepath_meminfo
-add  x1, x1, :lo12:filepath_meminfo
-mov  x2, #0
-mov  x3, #0
-mov  x8, #SYS_OPENAT
-svc  #0
-mov  x28, x0                // fd meminfo
-cmp  x28, #0
-b.lt mem_skip
+    // -------------------------------------------------------------
+    // 6. Mémoire RAM (/proc/meminfo)
+    // -------------------------------------------------------------
+    mov  x23, #-1                  // par défaut : indisponible
+    adrp x0, filepath_meminfo
+    add  x0, x0, :lo12:filepath_meminfo
+    adrp x1, buffer_meminfo
+    add  x1, x1, :lo12:buffer_meminfo
+    mov  x2, #1024
+    bl   read_file
+    cmp  x0, #20
+    blt  mem_skip
 
-mov  x0, x28
-adrp x1, buffer_meminfo
-add  x1, x1, :lo12:buffer_meminfo
-mov  x2, #1024
-mov  x8, #SYS_READ
-svc  #0
-mov  x29, x0                // nb octets lus
+    adrp x0, buffer_meminfo
+    add  x0, x0, :lo12:buffer_meminfo
+    mov  x1, x0
+    mov  x2, #0                    // MemTotal
+    mov  x3, #0                    // MemAvailable
 
-mov  x0, x28
-mov  x8, #SYS_CLOSE
-svc  #0
-
-cmp  x29, #20
-b.lt mem_skip
-
-adrp x0, buffer_meminfo
-add  x0, x0, :lo12:buffer_meminfo
-mov  x1, x0
-mov  x2, #0                  // MemTotal
-mov  x3, #0                  // MemAvailable
-
-// Chercher "MemTotal:"
+    // chercher "MemTotal:"
 search_total:
     ldrb w5, [x1], #1
     cbz  w5, mem_done_parse
@@ -542,32 +557,18 @@ search_total:
     ldrb w5, [x1], #1
     cmp  w5, #':'
     b.ne search_total
-    // trouvé "MemTotal:"
     // sauter les espaces
 skip_spaces_total:
     ldrb w5, [x1], #1
     cmp  w5, #' '
     b.eq skip_spaces_total
-    // premier chiffre
-    sub  w5, w5, #'0'
-    uxtw x5, w5              // CORRIGÉ : extension
-    mov  x2, x5
-read_total:
-    ldrb w5, [x1], #1
-    cmp  w5, #' '
-    b.eq after_total
-    cmp  w5, #'\n'
-    b.eq after_total
-    cmp  w5, #0
-    b.eq after_total
-    sub  w5, w5, #'0'
-    uxtw x5, w5              // CORRIGÉ : extension
-    add  x2, x2, x2, lsl #2  // x2 = x2 * 5
-    lsl  x2, x2, #1          // x2 = x2 * 10
-    add  x2, x2, x5          // ajout du nouveau chiffre
-    b    read_total
-after_total:
-    // Maintenant chercher "MemAvailable:"
+    sub  x1, x1, #1                // revenir sur le premier chiffre
+    mov  x0, x1
+    bl   parse_uint
+    mov  x2, x0                    // MemTotal
+    mov  x1, x1                    // pointeur après le nombre
+
+    // chercher "MemAvailable:"
 search_available:
     ldrb w5, [x1], #1
     cbz  w5, mem_done_parse
@@ -609,42 +610,26 @@ search_available:
     ldrb w5, [x1], #1
     cmp  w5, #':'
     b.ne search_available
-    // trouvé "MemAvailable:"
     // sauter les espaces
 skip_spaces_avail:
     ldrb w5, [x1], #1
     cmp  w5, #' '
     b.eq skip_spaces_avail
-    // premier chiffre
-    sub  w5, w5, #'0'
-    uxtw x5, w5              // CORRIGÉ
-    mov  x3, x5
-read_avail:
-    ldrb w5, [x1], #1
-    cmp  w5, #' '
-    b.eq after_avail
-    cmp  w5, #'\n'
-    b.eq after_avail
-    cmp  w5, #0
-    b.eq after_avail
-    sub  w5, w5, #'0'
-    uxtw x5, w5              // CORRIGÉ
-    add  x3, x3, x3, lsl #2
-    lsl  x3, x3, #1
-    add  x3, x3, x5
-    b    read_avail
-after_avail:
-    // Calcul du pourcentage
-    sub  x4, x2, x3          // utilisé = total - disponible
+    sub  x1, x1, #1
+    mov  x0, x1
+    bl   parse_uint
+    mov  x3, x0                    // MemAvailable
+
+    // calcul pourcentage utilisé
+    sub  x4, x2, x3                 // utilisé
     mov  x5, #100
     mul  x4, x4, x5
-    udiv x30, x4, x2         // x30 = pourcentage utilisé
-    mov  x23, x30             // CORRIGÉ : sauvegarde dans x23 (registre préservé)
+    udiv x23, x4, x2                // pourcentage dans x23
 mem_done_parse:
 mem_skip:
 
     // -------------------------------------------------------------
-    // 7. Horodatage UTC (cyan)
+    // 7. Horodatage UTC (identique à l'original)
     // -------------------------------------------------------------
     mov  x0, #0
     adrp x1, timespec
@@ -678,7 +663,7 @@ mem_skip:
 
     adrp x12, timebuf
     add  x12, x12, :lo12:timebuf
-    mov  x2, x12                // x2 pointe sur timebuf
+    mov  x2, x12               // pointeur dans timebuf
 
     // Cyan
     adrp x0, str_cyan
@@ -729,7 +714,7 @@ mem_skip:
     add  x0, x0, :lo12:str_reset
     bl   copy_str
 
-    // Sauvegarder la nouvelle position de timebuf
+    // Sauvegarder la nouvelle position
     mov  x12, x2
 
     // Écrire l'heure
@@ -742,231 +727,127 @@ mem_skip:
     mov  x8, #SYS_WRITE
     svc  #0
 
-// -------------------------------------------------------------
-// 8. Température CPU (avec coloration dynamique)
-// -------------------------------------------------------------
-adrp x1, buffer
-add  x1, x1, :lo12:buffer
+    // -------------------------------------------------------------
+    // 8. Construction de la ligne de sortie (outbuf)
+    // -------------------------------------------------------------
+    adrp x2, outbuf
+    add  x2, x2, :lo12:outbuf
 
-mov  x3, #0
-temp_parse:
-    ldrb w5, [x1], #1
-    cmp  w5, #'0'
-    b.lt temp_done
-    cmp  w5, #'9'
-    b.gt temp_done
-    sub  w5, w5, #'0'
-    uxtw x5, w5
-    add  x3, x3, x3, lsl #2
-    lsl  x3, x3, #1
-    add  x3, x3, x5
-    b    temp_parse
-
-temp_done:
-    mov  x5, #1000
-    udiv x6, x3, x5        // x6 = degrés entiers
-    msub x7, x6, x5, x3
-    mov  x5, #100
-    udiv x8, x7, x5        // x8 = dixièmes
-
-adrp x2, outbuf
-add  x2, x2, :lo12:outbuf
-
-// Effacer outbuf (512 octets)
-mov  x9, #64
-mov  x10, #0
-mov  x11, x2
+    // Effacer outbuf (512 octets)
+    mov  x9, #64
+    mov  x10, #0
+    mov  x11, x2
 clear_outbuf:
     str  x10, [x11], #8
     subs x9, x9, #1
     b.ne clear_outbuf
 
-adrp x2, outbuf
-add  x2, x2, :lo12:outbuf
+    adrp x2, outbuf
+    add  x2, x2, :lo12:outbuf
 
-// -------------------------------------------------------------
-// Couleur dynamique selon la température (x6 = degrés entiers)
-// -------------------------------------------------------------
-mov  x0, x6
+    // Restaurer les valeurs de température sauvegardées
+    mov x6, x24
+    mov x9, x25                  // utiliser x9 pour les dixièmes (préserve x8)
 
-cmp  x0, #50
-b.lt temp_green
-
-cmp  x0, #65
-b.lt temp_yellow
-
-cmp  x0, #80
-b.lt temp_orange
-
-// Rouge (>= 80°C)
-adrp x0, str_red
-add  x0, x0, :lo12:str_red
-bl   copy_str
-b    temp_color_done
-
+    // ---- Température CPU avec couleur ----
+    mov  x0, x6                   // degrés entiers
+    // choix couleur
+    cmp  x0, #50
+    b.lt temp_green
+    cmp  x0, #65
+    b.lt temp_yellow
+    cmp  x0, #80
+    b.lt temp_orange
+    // rouge
+    adrp x0, str_red
+    add  x0, x0, :lo12:str_red
+    bl   copy_str
+    b    temp_color_done
 temp_green:
-adrp x0, str_green
-add  x0, x0, :lo12:str_green
-bl   copy_str
-b    temp_color_done
-
+    adrp x0, str_green
+    add  x0, x0, :lo12:str_green
+    bl   copy_str
+    b    temp_color_done
 temp_yellow:
-adrp x0, str_yellow
-add  x0, x0, :lo12:str_yellow
-bl   copy_str
-b    temp_color_done
-
+    adrp x0, str_yellow
+    add  x0, x0, :lo12:str_yellow
+    bl   copy_str
+    b    temp_color_done
 temp_orange:
-adrp x0, str_orange
-add  x0, x0, :lo12:str_orange
-bl   copy_str
-
+    adrp x0, str_orange
+    add  x0, x0, :lo12:str_orange
+    bl   copy_str
 temp_color_done:
 
-// Emoji thermomètre
 .if SHOW_THERMO == 1
     adrp x0, str_thermo
     add  x0, x0, :lo12:str_thermo
     bl   copy_str
 .endif
 
-// -------------------------------------------------------------
-// Affichage des degrés entiers
-// -------------------------------------------------------------
-sub  sp, sp, #16
-mov  x9, sp
-mov  x10, x6
-mov  x11, #10
-mov  x12, #0
+    // afficher la température
+    mov  x0, x6
+    bl   uint_to_str                // écrit dans x2, utilise x8
+    mov  w3, '.'
+    strb w3, [x2], #1
+    add  w3, w9, '0'               // utiliser x9 pour le dixième
+    strb w3, [x2], #1
+    adrp x0, str_celsius
+    add  x0, x0, :lo12:str_celsius
+    bl   copy_str
+    adrp x0, str_reset
+    add  x0, x0, :lo12:str_reset
+    bl   copy_str
 
-cpu_dec_loop:
-    udiv x13, x10, x11
-    msub x14, x13, x11, x10
-    add  w14, w14, '0'
-    strb w14, [x9, x12]
-    add  x12, x12, #1
-    mov  x10, x13
-    cbnz x10, cpu_dec_loop
-
-add  x9, x9, x12
-sub  x9, x9, #1
-
-cpu_dec_out:
-    ldrb w10, [x9], #-1
-    strb w10, [x2], #1
-    subs x12, x12, #1
-    b.ne cpu_dec_out
-
-add  sp, sp, #16
-
-// ".x °C"
-mov  w3, '.'
-strb w3, [x2], #1
-add  w3, w8, '0'
-strb w3, [x2], #1
-
-adrp x0, str_celsius
-add  x0, x0, :lo12:str_celsius
-bl   copy_str
-
-// Reset couleur
-adrp x0, str_reset
-add  x0, x0, :lo12:str_reset
-bl   copy_str
-
-    // -------------------------------------------------------------
-    // 9. Fréquence CPU en bleu (avec label "Freq:")
-    // -------------------------------------------------------------
+    // ---- Fréquence CPU (si disponible) ----
     cmp  x18, #-1
     b.eq skip_freq
-
     adrp x0, str_space
     add  x0, x0, :lo12:str_space
     bl   copy_str
-
-//.ifdef SHOW_FREQ
 .if SHOW_FREQ == 1
-    // Texte "Freq:"
     adrp x0, str_freq
     add  x0, x0, :lo12:str_freq
     bl   copy_str
 .endif
-
-    // -------------------------------------------------------------
-    // Couleur dynamique selon la fréquence CPU (x18 = MHz)
-    // -------------------------------------------------------------
+    // couleur selon fréquence
     mov  x0, x18
-
     cmp  x0, #800
     b.lt freq_green
-
     cmp  x0, #1200
     b.lt freq_yellow
-
     cmp  x0, #1500
     b.lt freq_orange
-
     cmp  x0, #1800
     b.lt freq_orange_dark
-
-    // Rouge (>= 1800 MHz)
+    // rouge
     adrp x0, str_red
     add  x0, x0, :lo12:str_red
     bl   copy_str
     b    freq_color_done
-
 freq_green:
     adrp x0, str_green
     add  x0, x0, :lo12:str_green
     bl   copy_str
     b    freq_color_done
-
 freq_yellow:
     adrp x0, str_yellow
     add  x0, x0, :lo12:str_yellow
     bl   copy_str
     b    freq_color_done
-
 freq_orange:
     adrp x0, str_orange
     add  x0, x0, :lo12:str_orange
     bl   copy_str
     b    freq_color_done
-
 freq_orange_dark:
-    // Optionnel : orange foncé (256 couleurs)
-    // Sinon, réutiliser str_orange
     adrp x0, str_orange_dark
     add  x0, x0, :lo12:str_orange_dark
     bl   copy_str
-
 freq_color_done:
-
-    // Valeur
-    sub  sp, sp, #16
-    mov  x9, sp
-    mov  x10, x18
-    mov  x11, #10
-    mov  x12, #0
-freq_dec_loop:
-    udiv x13, x10, x11
-    msub x14, x13, x11, x10
-    add  w14, w14, '0'
-    strb w14, [x9, x12]
-    add  x12, x12, #1
-    mov  x10, x13
-    cbnz x10, freq_dec_loop
-
-    add  x9, x9, x12
-    sub  x9, x9, #1
-freq_dec_out:
-    ldrb w10, [x9], #-1
-    strb w10, [x2], #1
-    subs x12, x12, #1
-    b.ne freq_dec_out
-
-    add  sp, sp, #16
-
+    // afficher la fréquence
+    mov  x0, x18
+    bl   uint_to_str
     mov  w3, '.'
     strb w3, [x2], #1
     add  w3, w21, '0'
@@ -977,205 +858,105 @@ freq_dec_out:
     adrp x0, str_mhz
     add  x0, x0, :lo12:str_mhz
     bl   copy_str
-
-    // Reset
     adrp x0, str_reset
     add  x0, x0, :lo12:str_reset
     bl   copy_str
-
 skip_freq:
 
-    // -------------------------------------------------------------
-    // 10. Utilisation CPU (Load:) avec couleur dynamique
-    // -------------------------------------------------------------
+    // ---- Utilisation CPU (load) ----
     adrp x0, str_space
     add  x0, x0, :lo12:str_space
     bl   copy_str
-
-    // Texte "Load:"
     adrp x0, str_load
     add  x0, x0, :lo12:str_load
     bl   copy_str
 
-//    // Choisir la couleur selon x22
-//    mov  x0, x22
-//    cmp  x0, #33
-//    b.lt load_green
-//    cmp  x0, #66
-//    b.lt load_yellow
-//    // >= 66% : rouge
-//    adrp x0, str_red
-//    add  x0, x0, :lo12:str_red
-//    bl   copy_str
-//    b    load_pct_display
-//load_yellow:
-//    adrp x0, str_yellow
-//    add  x0, x0, :lo12:str_yellow
-//    bl   copy_str
-//    b    load_pct_display
-//load_green:
-//    adrp x0, str_green
-//    add  x0, x0, :lo12:str_green
-//    bl   copy_str
-//
-
-    // Choisir la couleur selon x22 (CPU %)
+    // couleur selon x22
     mov  x0, x22
     cmp  x0, #25
     b.lt cpu_green
-
     cmp  x0, #50
     b.lt cpu_yellow
-
     cmp  x0, #75
     b.lt cpu_orange
-
-    // Rouge (>= 75)
+    // rouge
     adrp x0, str_red
     add  x0, x0, :lo12:str_red
     bl   copy_str
     b    cpu_color_done
-
 cpu_green:
     adrp x0, str_green
     add  x0, x0, :lo12:str_green
     bl   copy_str
     b    cpu_color_done
-
 cpu_yellow:
     adrp x0, str_yellow
     add  x0, x0, :lo12:str_yellow
     bl   copy_str
     b    cpu_color_done
-
 cpu_orange:
     adrp x0, str_orange
     add  x0, x0, :lo12:str_orange
     bl   copy_str
-
 cpu_color_done:
 
-
-
-load_pct_display:
-    // Convertir x22 en décimal
-    sub  sp, sp, #16
-    mov  x9, sp
-    mov  x10, x22
-    mov  x11, #10
-    mov  x12, #0
-load_pct_loop:
-    udiv x13, x10, x11
-    msub x14, x13, x11, x10
-    add  w14, w14, '0'
-    strb w14, [x9, x12]
-    add  x12, x12, #1
-    mov  x10, x13
-    cbnz x10, load_pct_loop
-
-    add  x9, x9, x12
-    sub  x9, x9, #1
-load_pct_out:
-    ldrb w10, [x9], #-1
-    strb w10, [x2], #1
-    subs x12, x12, #1
-    b.ne load_pct_out
-
-    add  sp, sp, #16
-
-    // "%"
+    // afficher le pourcentage CPU
+    mov  x0, x22
+    bl   uint_to_str
     adrp x0, str_percent
     add  x0, x0, :lo12:str_percent
     bl   copy_str
-
-    // Reset couleur
     adrp x0, str_reset
     add  x0, x0, :lo12:str_reset
     bl   copy_str
 
-    // -------------------------------------------------------------
-    // 11. Mémoire RAM (RAM:) avec couleur dynamique (utilise x23)
-    // -------------------------------------------------------------
-    cmp  x23, #-1                // CORRIGÉ : utiliser x23 au lieu de x30
+    // ---- Mémoire RAM ----
+    cmp  x23, #-1
     b.eq skip_ram
-
     adrp x0, str_space
     add  x0, x0, :lo12:str_space
     bl   copy_str
-
-    // Texte "RAM:"
     adrp x0, str_ram
     add  x0, x0, :lo12:str_ram
     bl   copy_str
 
-    // Choisir la couleur selon x23
-    mov  x0, x23                 // CORRIGÉ
+    // couleur selon x23
+    mov  x0, x23
     cmp  x0, #50
     b.lt ram_green
     cmp  x0, #80
     b.lt ram_yellow
-    // >= 80% : rouge
+    // rouge
     adrp x0, str_red
     add  x0, x0, :lo12:str_red
-    bl   copy_str
-    b    ram_pct_display
-ram_yellow:
-    adrp x0, str_yellow
-    add  x0, x0, :lo12:str_yellow
     bl   copy_str
     b    ram_pct_display
 ram_green:
     adrp x0, str_green
     add  x0, x0, :lo12:str_green
     bl   copy_str
-
+    b    ram_pct_display
+ram_yellow:
+    adrp x0, str_yellow
+    add  x0, x0, :lo12:str_yellow
+    bl   copy_str
 ram_pct_display:
-    // Convertir x23 en décimal
-    sub  sp, sp, #16
-    mov  x9, sp
-    mov  x10, x23                // CORRIGÉ
-    mov  x11, #10
-    mov  x12, #0
-ram_pct_loop:
-    udiv x13, x10, x11
-    msub x14, x13, x11, x10
-    add  w14, w14, '0'
-    strb w14, [x9, x12]
-    add  x12, x12, #1
-    mov  x10, x13
-    cbnz x10, ram_pct_loop
-
-    add  x9, x9, x12
-    sub  x9, x9, #1
-ram_pct_out:
-    ldrb w10, [x9], #-1
-    strb w10, [x2], #1
-    subs x12, x12, #1
-    b.ne ram_pct_out
-
-    add  sp, sp, #16
-
-    // "%"
+    mov  x0, x23
+    bl   uint_to_str
     adrp x0, str_percent
     add  x0, x0, :lo12:str_percent
     bl   copy_str
-
-    // Reset couleur
     adrp x0, str_reset
     add  x0, x0, :lo12:str_reset
     bl   copy_str
-
 skip_ram:
 
-    // -------------------------------------------------------------
-    // 12. Indicateur sous-tension
-    // -------------------------------------------------------------
+    // ---- Under‑voltage ----
     cmp  x20, #1
     b.eq under_voltage
     cmp  x20, #0
     b.eq voltage_normal
     b    skip_voltage
-
 under_voltage:
     adrp x0, str_space
     add  x0, x0, :lo12:str_space
@@ -1190,7 +971,6 @@ under_voltage:
     add  x0, x0, :lo12:str_reset
     bl   copy_str
     b    skip_voltage
-
 voltage_normal:
     adrp x0, str_space
     add  x0, x0, :lo12:str_space
@@ -1204,15 +984,11 @@ voltage_normal:
     adrp x0, str_reset
     add  x0, x0, :lo12:str_reset
     bl   copy_str
-
 skip_voltage:
 
-    // -------------------------------------------------------------
-    // 13. Load averages
-    // -------------------------------------------------------------
+    // ---- Load averages ----
     cmp  x27, #1
     b.ne skip_loadavg
-
     adrp x0, str_space
     add  x0, x0, :lo12:str_space
     bl   copy_str
@@ -1221,12 +997,9 @@ skip_voltage:
     adrp x0, str_color_1m
     add  x0, x0, :lo12:str_color_1m
     bl   copy_str
-
     adrp x0, str_1m
     add  x0, x0, :lo12:str_1m
     bl   copy_str
-
-    // copier premier nombre
     adrp x0, buffer_load
     add  x0, x0, :lo12:buffer_load
 copy_1m:
@@ -1240,44 +1013,33 @@ copy_1m:
     strb w4, [x2], #1
     b    copy_1m
 after_1m:
-    // 1 espace après le premier nombre
     adrp x0, str_space
     add  x0, x0, :lo12:str_space
     bl   copy_str
 
-    // 5m:
+    // 5m
     adrp x0, str_color_5m
     add  x0, x0, :lo12:str_color_5m
     bl   copy_str
-
     adrp x0, str_5m
     add  x0, x0, :lo12:str_5m
     bl   copy_str
-
-    // réinitialiser le pointeur buffer_load
+    // trouver le deuxième nombre
     adrp x0, buffer_load
     add  x0, x0, :lo12:buffer_load
+    // sauter le premier nombre et l'espace
     mov  x4, #0
-    mov  x5, #0
-
-    // trouver le deuxième champ
-find_5m:
-    ldrb w6, [x0, x5]
-    add  x5, x5, #1
-    cmp  w6, #' '
-    b.eq find_5m
-    cmp  w6, #0
-    b.eq loadavg_error
-    cmp  w6, #'\n'
-    b.eq loadavg_error
-    sub  x5, x5, #1
-    add  x0, x0, x5
-    b    copy_5m_start
-
-loadavg_error:
-    b    skip_loadavg
-
-copy_5m_start:
+skip_first:
+    ldrb w5, [x0], #1
+    cmp  w5, #' '
+    b.ne skip_first
+    // maintenant on est sur l'espace, on le saute
+skip_spaces_after_first:
+    ldrb w5, [x0], #1
+    cmp  w5, #' '
+    b.eq skip_spaces_after_first
+    // on a le premier caractère du deuxième nombre, reculer d'un
+    sub x0, x0, #1
     // copier le deuxième nombre
 copy_5m:
     ldrb w4, [x0], #1
@@ -1290,44 +1052,42 @@ copy_5m:
     strb w4, [x2], #1
     b    copy_5m
 after_5m:
-    // 1 espaces après le deuxième nombre
     adrp x0, str_space
     add  x0, x0, :lo12:str_space
     bl   copy_str
 
-    // 15m:
+    // 15m
     adrp x0, str_color_15m
     add  x0, x0, :lo12:str_color_15m
     bl   copy_str
-
     adrp x0, str_15m
     add  x0, x0, :lo12:str_15m
     bl   copy_str
-
-    // réinitialiser le pointeur buffer_load
+    // trouver le troisième nombre
     adrp x0, buffer_load
     add  x0, x0, :lo12:buffer_load
+    // sauter les deux premiers nombres et espaces
     mov  x4, #0
-    mov  x5, #0
-
-    // trouver le troisième champ
-find_15m:
-    ldrb w6, [x0, x5]
-    add  x5, x5, #1
-    cmp  w6, #' '
-    b.eq find_15m
-    cmp  w6, #0
-    b.eq loadavg_error2
-    cmp  w6, #'\n'
-    b.eq loadavg_error2
-    sub  x5, x5, #1
-    add  x0, x0, x5
-    b    copy_15m_start
-
-loadavg_error2:
-    b    skip_loadavg
-
-copy_15m_start:
+    // sauter premier nombre et espace
+skip_first_again:
+    ldrb w5, [x0], #1
+    cmp  w5, #' '
+    b.ne skip_first_again
+skip_spaces_after_first_again:
+    ldrb w5, [x0], #1
+    cmp  w5, #' '
+    b.eq skip_spaces_after_first_again
+    // maintenant on est sur le premier caractère du deuxième nombre, on le saute
+skip_second:
+    ldrb w5, [x0], #1
+    cmp  w5, #' '
+    b.ne skip_second
+skip_spaces_after_second:
+    ldrb w5, [x0], #1
+    cmp  w5, #' '
+    b.eq skip_spaces_after_second
+    // on a le premier caractère du troisième nombre, reculer d'un
+    sub x0, x0, #1
     // copier le troisième nombre
 copy_15m:
     ldrb w4, [x0], #1
@@ -1340,29 +1100,24 @@ copy_15m:
     strb w4, [x2], #1
     b    copy_15m
 after_15m:
-    // pas d'espaces après le dernier nombre
-
+    // pas d'espace après
 skip_loadavg:
 
-    // -------------------------------------------------------------
-    // 14. Fin de ligne
-    // -------------------------------------------------------------
+    // ---- Fin de ligne ----
     mov  w3, '\n'
     strb w3, [x2], #1
 
+    // Écrire la ligne complète
     adrp x3, outbuf
     add  x3, x3, :lo12:outbuf
     sub  x12, x2, x3
-
     mov  x0, #1
     mov  x1, x3
     mov  x2, x12
     mov  x8, #SYS_WRITE
     svc  #0
 
-    // -------------------------------------------------------------
-    // 15. Pause 1 seconde
-    // -------------------------------------------------------------
+    // ---- Pause 1 seconde ----
     adrp x0, sleep_ts
     add  x0, x0, :lo12:sleep_ts
     mov  x1, #0
@@ -1371,7 +1126,11 @@ skip_loadavg:
 
     b loop
 
+// -------------------------------------------------------------------
+// Fin du programme
+// -------------------------------------------------------------------
 _exit:
     mov  x0, #0
     mov  x8, #SYS_EXIT
     svc  #0
+    
