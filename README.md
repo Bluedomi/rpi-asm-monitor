@@ -5,16 +5,16 @@ Ce projet a été conçu **dans un but didactique**, pour explorer l’assembleu
 
 ---
 
-## ✨ Fonctionnalités principales
+# ✨ Fonctionnalités principales
 
 Le programme affiche en continu :
 
-### 🕒 Horodatage UTC
+## 🕒 Horodatage UTC
 - Lecture via `clock_gettime(CLOCK_REALTIME)`
 - Conversion HH:MM:SS sans libc
 - Affichage en cyan
 
-### 🌡️ Température CPU
+## 🌡️ Température CPU
 - Lecture directe du SoC : `/sys/class/thermal/thermal_zone0/temp`
 - Conversion millidegrés → degrés + dixième
 - Couleur dynamique :
@@ -24,12 +24,12 @@ Le programme affiche en continu :
   - rouge ≥ 80°C  
 - Emoji thermomètre (optionnel)
 
-### 🚀 Fréquence CPU
+## 🚀 Fréquence CPU
 - Lecture : `/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq`
 - Conversion kHz → MHz (avec décimale)
 - Couleur dynamique selon la fréquence
 
-### ⚡ État électrique (under‑voltage)
+## ⚡ État électrique (under‑voltage)
 - Lecture : `/sys/devices/platform/soc/soc:firmware/get_throttled`
 - Parsing hexadécimal → entier
 - Bit 0 = sous‑tension
@@ -37,7 +37,7 @@ Le programme affiche en continu :
   - `⚡️❌` en rouge (under‑voltage)
   - `⚡️✅` en vert (OK)
 
-### 🧮 Charge CPU (instantanée)
+## 🧮 Charge CPU (instantanée)
 - Lecture : `/proc/stat`
 - Calcul du pourcentage CPU utilisé depuis l’intervalle précédent
 - Couleur dynamique :
@@ -46,12 +46,12 @@ Le programme affiche en continu :
   - orange < 75%
   - rouge ≥ 75%
 
-### 📊 Load averages (1m, 5m, 15m)
+## 📊 Load averages (1m, 5m, 15m)
 - Lecture : `/proc/loadavg`
 - Extraction des trois valeurs
 - Affichage coloré
 
-### 🧠 RAM utilisée (%)
+## 🧠 RAM utilisée (%)
 - Lecture : `/proc/meminfo`
 - Parsing de `MemTotal` et `MemAvailable`
 - Calcul du pourcentage utilisé
@@ -62,47 +62,30 @@ Le programme affiche en continu :
 
 ---
 
-## 🎥 Vidéos de présentation
+# 🎥 Vidéos de présentation
 
 Deux vidéos illustrent l’évolution du projet, depuis la version initiale (0.0) jusqu’à la version avancée (1.9).  
 Elles montrent la progression pédagogique du moniteur système en assembleur ARM64 sur Raspberry Pi 4B.
 
 ---
 
-### 🔹 Version 0.0 — Première ébauche (lecture simple de la température)
+## 🔹 Version 0.0 — Première ébauche (lecture simple de la température)
 
 [![Demo v0.0](https://img.youtube.com/vi/9T2jM_kBt7g/0.jpg)](https://youtu.be/9T2jM_kBt7g)
 
 ➡️ https://youtu.be/9T2jM_kBt7g
 
-Cette version montre :
-- la lecture brute de la température CPU via `/sys/class/thermal/...`
-- la conversion millidegrés → degrés
-- un affichage minimaliste sans couleurs
-- la structure de base du programme en assembleur AArch64
-
 ---
 
-### 🔹 Version 1.9 — Moniteur système complet (température, fréquence, RAM, CPU, loadavg…)
+## 🔹 Version 1.9 — Moniteur système complet
 
 [![Demo v1.9](https://img.youtube.com/vi/Y2lfMdMY5QY/0.jpg)](https://youtu.be/Y2lfMdMY5QY)
 
 ➡️ https://youtu.be/Y2lfMdMY5QY
 
-Cette version inclut :
-- température CPU avec couleur dynamique  
-- fréquence CPU (MHz + dixième)  
-- charge CPU instantanée (%)  
-- load averages (1m, 5m, 15m)  
-- RAM utilisée (%)  
-- état électrique (under‑voltage)  
-- horodatage UTC  
-- couleurs ANSI  
-- rafraîchissement 1 Hz  
-- parsing complet de `/proc` et `/sys`  
-
 ---
-## 📸 Captures d’écran
+
+# 📸 Captures d’écran
 
 Voici un aperçu du moniteur système ARM64 en action, exécuté sur un Raspberry Pi 4B via un terminal Termux sur smartphone (connexion SSH).
 
@@ -114,41 +97,50 @@ Voici un aperçu du moniteur système ARM64 en action, exécuté sur un Raspberr
 
 ---
 
-## 🎧 Fichiers audio explicatifs
+# 🎧 Fichiers audio explicatifs
+
+Les fichiers audio (versions mono) sont disponibles dans : `docs/audio`
 
 - `audio_RPi4b_AArch64_Assembly_System_Monitor_v0.0_mono.m4a`  
 - `audio_RPi4b_AArch64_Assembly_System_Monitor_v1.9_mono.m4a`
 
-Les fichiers audio (versions mono) sont disponibles dans : docs/audio
 Ils commentent la démarche pédagogique et l’évolution du projet.
 
 ---
 
-## 🕰️ Historique des versions
+# 🕰️ Historique des versions
 
-### **Version 0.0**
-- Lecture de la température CPU  
-- Conversion millidegrés → degrés  
-- Affichage minimaliste  
-- Syscalls utilisés : openat, read, write, close  
-- Base du projet, première exploration de l’assembleur ARM64  
+## **Version 2.2 — Refactoring majeur (2026‑03‑19)**
+- Factorisation des routines (`read_file`, `parse_uint`, `parse_hex`, `uint_to_str`, `copy_str`)
+- Code plus lisible, modulaire, robuste
+- Calcul CPU amélioré
+- Parsing RAM amélioré
+- Gestion des couleurs optimisée
+- Nettoyage du buffer plus efficace
+- Registres dédiés pour les valeurs persistantes
+- Structure générale clarifiée
 
-### **Version 1.9**
+## **Version 1.9**
 - Température CPU (couleurs dynamiques + emoji)  
-- Fréquence CPU (MHz + dixième, couleurs dynamiques)  
-- Charge CPU instantanée (%) via `/proc/stat`  
-- RAM utilisée (%) via `/proc/meminfo`  
-- Load averages (1m, 5m, 15m)  
-- Détection under‑voltage (⚡️❌ / ⚡️✅)  
+- Fréquence CPU (MHz + dixième)  
+- Charge CPU instantanée (%)  
+- RAM utilisée (%)  
+- Load averages  
+- Under‑voltage  
 - Horodatage UTC  
 - Couleurs ANSI  
 - Rafraîchissement 1 Hz  
 - Parsing complet de `/proc` et `/sys`  
-- Code structuré, modulaire, lisible  
+
+## **Version 0.0**
+- Lecture de la température CPU  
+- Conversion millidegrés → degrés  
+- Affichage minimaliste  
+- Syscalls : openat, read, write, close  
 
 ---
 
-## 🧱 Architecture du programme
+# 🧱 Architecture du programme
 
 Le programme suit une boucle simple :
 
@@ -156,8 +148,8 @@ Le programme suit une boucle simple :
 2. Lire throttling  
 3. Lire fréquence CPU  
 4. Lire loadavg  
-5. Lire /proc/stat et calculer CPU%  
-6. Lire /proc/meminfo et calculer RAM%  
+5. Lire `/proc/stat` et calculer CPU%  
+6. Lire `/proc/meminfo` et calculer RAM%  
 7. Lire l’heure UTC  
 8. Formater et colorer chaque section  
 9. Afficher la ligne complète  
@@ -165,12 +157,11 @@ Le programme suit une boucle simple :
 
 Aucune allocation dynamique.  
 Aucun appel à libc.  
-Aucun binaire externe.  
 Uniquement des **syscalls Linux ARM64**.
 
 ---
 
-## 🔧 Syscalls utilisés
+# 🔧 Syscalls utilisés
 
 | Fonction | Syscall | Description |
 |---------|---------|-------------|
@@ -184,7 +175,7 @@ Uniquement des **syscalls Linux ARM64**.
 
 ---
 
-## 🛠️ Compilation
+# 🛠️ Compilation
 
 Assembler et lier statiquement :
 
@@ -193,8 +184,6 @@ as -o monitor_temp.o monitor_temp.s
 gcc -nostdlib -static -o monitor-temp-ASM monitor_temp.o
 strip monitor-temp-ASM
 ```
-
----
 
 ## ▶️ Exécution
 
