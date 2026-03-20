@@ -1,10 +1,10 @@
 /*
- * ======================================================================================
+ * ==================================================================
  * Fichier     : monitor_temp.s
- * Version     : 2.2
- * Date        : 2026-03-19
+ * Version     : 2.3
+ * Date        : 2026-03-20
  * Auteur      : /B4SH 😎
- * --------------------------------------------------------------------------------------
+ * ------------------------------------------------------------------
  * LANGAGE     : ASSEMBLEUR AArch64 (ARMv8-A)
  * DESCRIPTION : Monitoring système temps réel pour Raspberry Pi 4B
  *               Version refactorisée avec routines factorisées.
@@ -12,12 +12,25 @@
  * $ as -o monitor_temp.o monitor_temp.s
  * $ gcc -nostdlib -static -o monitor-temp-ASM monitor_temp.o
  * $ strip monitor-temp-ASM
- * ======================================================================================
+ * ==================================================================
  */
 
 // Options de compilation
 .equ SHOW_FREQ,     1  // 1 pour activer, 0 pour désactiver
 .equ SHOW_THERMO,   1
+
+.equ BUFFER_MEMINFO_SIZE,   128 // previously 1024
+.equ OUTPUT_BUFFER_SIZE,    256 // previously 512      
+.equ BUFFER_STAT_SIZE,      128 // previously 256
+.equ TIME_BUFFER_SIZE,      64  // previously 128
+
+// Largeurs de colonnes (en caractères visibles)
+.equ COL_TEMP_WIDTH,      6     // "103.7°C" + marge
+.equ COL_FREQ_WIDTH,      11    // "F:2400.0MHz"
+.equ COL_CPU_WIDTH,       6     // "L:100%"
+.equ COL_RAM_WIDTH,       6     // "M:100%"
+.equ COL_UV_WIDTH,        4     // "⚡️❌"
+.equ COL_LA_WIDTH,        8     // "1m:12.35"
 
 .global _start
 
@@ -50,7 +63,7 @@ str_freq:       .asciz "F:"
 str_load:       .asciz "L:"
 str_ram:        .asciz "M:"
 str_mhz:        .asciz "MHz"
-str_thermo:     .asciz "🌡️ "
+str_thermo:     .asciz "🌡 "
 str_celsius:    .asciz "°C"
 str_ok:         .asciz "⚡️✅"
 str_undervolt:  .asciz "⚡️❌"
@@ -84,15 +97,18 @@ buffer_freq:
     .space 16
 buffer_load:
     .space 64
+
 buffer_stat:
-    .space 256
+    .space BUFFER_STAT_SIZE
+
 buffer_meminfo:
-    .space 1024
+    .space BUFFER_MEMINFO_SIZE 
 
 outbuf:
-    .space 512
+    .space OUTPUT_BUFFER_SIZE
+
 timebuf:
-    .space 128
+    .space TIME_BUFFER_SIZE
 
 sleep_ts:
     .quad 1
@@ -113,9 +129,9 @@ first_stat:
 
 .section .text
 
-// -------------------------------------------------------------------
+// -----------------------------------------------------------------
 // copy_str : copie une chaîne ASCIIZ de x0 vers (x2), met à jour x2
-// -------------------------------------------------------------------
+// -----------------------------------------------------------------
 copy_str:
     ldrb w1, [x0], #1
     cbz  w1, 1f
@@ -173,11 +189,11 @@ read_file:
     ldp x4, x5, [sp], #16
     ret
 
-// -------------------------------------------------------------------
+// ------------------------------------------------------------
 // parse_uint : convertit une chaîne décimale en entier 64 bits
 // Entrée : x0 = pointeur début du nombre
 // Sortie : x0 = valeur, x1 = pointeur après le nombre
-// -------------------------------------------------------------------
+// ------------------------------------------------------------
 parse_uint:
     mov x5, #0                 // accumulateur
     mov x6, x0                 // pointeur courant
@@ -199,11 +215,11 @@ parse_uint:
     mov x1, x6
     ret
 
-// -------------------------------------------------------------------
+// ------------------------------------------------------------------------------
 // parse_hex : convertit une chaîne hexadécimale (sans préfixe) en entier 64 bits
 // Entrée : x0 = pointeur début du nombre
 // Sortie : x0 = valeur, x1 = pointeur après le nombre
-// -------------------------------------------------------------------
+// ------------------------------------------------------------------------------
 parse_hex:
     mov x5, #0
     mov x6, x0
@@ -243,11 +259,11 @@ parse_hex:
     mov x1, x6
     ret
 
-// -------------------------------------------------------------------
+// ------------------------------------------------------------
 // uint_to_str : convertit un entier 64 bits en chaîne décimale
 // Entrée : x0 = valeur, x2 = pointeur buffer (sera mis à jour)
 // Sortie : x2 pointe après le dernier caractère écrit
-// -------------------------------------------------------------------
+// ------------------------------------------------------------
 uint_to_str:
     sub sp, sp, #32            // réserve 32 octets sur la pile
     mov x3, sp                 // début de la zone
@@ -283,15 +299,111 @@ uint_to_str:
     add sp, sp, #32
     ret
 
-// -------------------------------------------------------------------
+// ---------------------------------------------------------------------------------
+// pad_to_width : aligne la colonne en ajoutant des espaces (ignore ANSI et emojis).
+// Entrée : x0 = largeur visuelle voulue, x2 = pointeur courant dans outbuf
+// Sortie : x2 mis à jour après padding
+// ---------------------------------------------------------------------------------
+pad_to_width:
+    mov x3, x2          // pointeur de scan
+    mov x4, #0          // largeur visuelle
+
+// Reculer jusqu'au début du champ (sur espace ou début)
+1:
+    sub x3, x3, #1
+    ldrb w5, [x3]
+    cmp w5, ' '
+    beq 2f
+    cmp w5, #0x0A
+    beq 2f
+    cmp x3, #0
+    bne 1b
+
+2:
+    add x3, x3, #1      // x3 = début du champ
+
+// Parcourir le champ pour calculer la largeur visuelle
+3:
+    cmp x3, x2
+    beq 6f              // fin du champ
+
+    ldrb w5, [x3]
+
+    // Séquence ANSI ? ESC = 0x1B
+    cmp w5, #0x1B
+    bne 4f
+
+    // Sauter ESC [
+    add x3, x3, #1
+    ldrb w6, [x3]
+    cmp w6, #'['
+    bne 3b
+
+5:  // Sauter jusqu'à 'm'
+    add x3, x3, #1
+    ldrb w6, [x3]
+    cmp w6, #'m'
+    bne 5b
+    add x3, x3, #1
+    b 3b
+
+4:
+    // Emoji UTF‑8 (4 octets) → largeur 2
+    cmp w5, #0xF0
+    bge 7f
+
+    // UTF‑8 3 octets → largeur 1
+    cmp w5, #0xE0
+    bge 8f
+
+    // UTF‑8 2 octets → largeur 1
+    cmp w5, #0xC0
+    bge 9f
+
+    // ASCII → largeur 1
+    add x4, x4, #1
+    add x3, x3, #1
+    b 3b
+
+7:  // Emoji (4 octets)
+    add x4, x4, #2
+    add x3, x3, #4
+    b 3b
+
+8:  // UTF‑8 3 octets
+    add x4, x4, #1
+    add x3, x3, #3
+    b 3b
+
+9:  // UTF‑8 2 octets
+    add x4, x4, #1
+    add x3, x3, #2
+    b 3b
+
+// Ajouter les espaces nécessaires
+6:
+    cmp x4, x0
+    bge 10f
+
+    mov w5, ' '
+11:
+    strb w5, [x2], #1
+    add x4, x4, #1
+    cmp x4, x0
+    blt 11b
+
+10:
+    ret
+
+// -------------------
 // Programme principal
-// -------------------------------------------------------------------
+// -------------------
 _start:
     // boucle infinie
 loop:
-    // -------------------------------------------------------------
+    // ------------------
     // 1. Température CPU
-    // -------------------------------------------------------------
+    // ------------------
     adrp x0, filepath_temp
     add  x0, x0, :lo12:filepath_temp
     adrp x1, buffer
@@ -317,9 +429,9 @@ loop:
     mov x24, x6
     mov x25, x8
 
-    // -------------------------------------------------------------
+    // ----------------------------
     // 2. Under‑voltage (throttled)
-    // -------------------------------------------------------------
+    // ----------------------------
     mov  x20, #-1                  // par défaut : inconnu
     adrp x0, filepath_throttled
     add  x0, x0, :lo12:filepath_throttled
@@ -341,9 +453,9 @@ voltage_ok:
     mov  x20, #0
 throttle_done:
 
-    // -------------------------------------------------------------
+    // ----------------
     // 3. Fréquence CPU
-    // -------------------------------------------------------------
+    // ----------------
     mov  x18, #-1                  // par défaut : absent
     adrp x0, filepath_freq
     add  x0, x0, :lo12:filepath_freq
@@ -366,9 +478,9 @@ throttle_done:
     udiv x21, x19, x17             // dixièmes
 freq_done:
 
-    // -------------------------------------------------------------
+    // ---------------
     // 4. Load average
-    // -------------------------------------------------------------
+    // ---------------
     mov  x27, #0
     adrp x0, filepath_loadavg
     add  x0, x0, :lo12:filepath_loadavg
@@ -381,14 +493,15 @@ freq_done:
     mov  x27, #1
 load_done:
 
-    // -------------------------------------------------------------
+    // -----------------------------------
     // 5. Utilisation CPU (via /proc/stat)
-    // -------------------------------------------------------------
+    // -----------------------------------
     adrp x0, filepath_stat
     add  x0, x0, :lo12:filepath_stat
     adrp x1, buffer_stat
     add  x1, x1, :lo12:buffer_stat
-    mov  x2, #256
+//    mov  x2, #256
+    mov  x2, BUFFER_STAT_SIZE
     bl   read_file
     cmp  x0, #0
     blt  skip_cpu_stat
@@ -508,15 +621,16 @@ store_first_stat:
 cpu_stat_done:
 skip_cpu_stat:
 
-    // -------------------------------------------------------------
+    // ------------------------------
     // 6. Mémoire RAM (/proc/meminfo)
-    // -------------------------------------------------------------
+    // ------------------------------
     mov  x23, #-1                  // par défaut : indisponible
     adrp x0, filepath_meminfo
     add  x0, x0, :lo12:filepath_meminfo
     adrp x1, buffer_meminfo
     add  x1, x1, :lo12:buffer_meminfo
-    mov  x2, #1024
+    //mov  x2, #1024 // keep this line for memo
+    mov  x2, BUFFER_MEMINFO_SIZE
     bl   read_file
     cmp  x0, #20
     blt  mem_skip
@@ -628,9 +742,9 @@ skip_spaces_avail:
 mem_done_parse:
 mem_skip:
 
-    // -------------------------------------------------------------
-    // 7. Horodatage UTC (identique à l'original)
-    // -------------------------------------------------------------
+    // -----------------
+    // 7. Horodatage UTC
+    // -----------------
     mov  x0, #0
     adrp x1, timespec
     add  x1, x1, :lo12:timespec
@@ -670,7 +784,7 @@ mem_skip:
     add  x0, x0, :lo12:str_cyan
     bl   copy_str
 
-    // '['
+    // '[' // début de ligne : crochet ouvert
     mov  w13, '['
     strb w13, [x2], #1
 
@@ -727,14 +841,18 @@ mem_skip:
     mov  x8, #SYS_WRITE
     svc  #0
 
-    // -------------------------------------------------------------
+    // ----------------------------------------------
     // 8. Construction de la ligne de sortie (outbuf)
-    // -------------------------------------------------------------
+    // ----------------------------------------------
     adrp x2, outbuf
     add  x2, x2, :lo12:outbuf
 
     // Effacer outbuf (512 octets)
-    mov  x9, #64
+    // mov  x9, #64
+    
+    // Effacer outbuf dynamiquement selon la constante
+    mov  x9, #(OUTPUT_BUFFER_SIZE / 8) // Calcule 32 itérations pour 256 octets
+
     mov  x10, #0
     mov  x11, x2
 clear_outbuf:
@@ -749,16 +867,16 @@ clear_outbuf:
     mov x6, x24
     mov x9, x25                  // utiliser x9 pour les dixièmes (préserve x8)
 
-    // ---- Température CPU avec couleur ----
-    mov  x0, x6                   // degrés entiers
-    // choix couleur
+    // ---- Température CPU ----
+
+    // couleur selon température
+    mov  x0, x6
     cmp  x0, #50
     b.lt temp_green
     cmp  x0, #65
     b.lt temp_yellow
     cmp  x0, #80
     b.lt temp_orange
-    // rouge
     adrp x0, str_red
     add  x0, x0, :lo12:str_red
     bl   copy_str
@@ -787,29 +905,40 @@ temp_color_done:
 
     // afficher la température
     mov  x0, x6
-    bl   uint_to_str                // écrit dans x2, utilise x8
+    bl   uint_to_str
     mov  w3, '.'
     strb w3, [x2], #1
-    add  w3, w9, '0'               // utiliser x9 pour le dixième
+    add  w3, w9, '0'
     strb w3, [x2], #1
     adrp x0, str_celsius
     add  x0, x0, :lo12:str_celsius
     bl   copy_str
+
+    // reset couleur
     adrp x0, str_reset
     add  x0, x0, :lo12:str_reset
+    bl   copy_str
+
+    // padding colonne température
+    mov x0, #COL_TEMP_WIDTH
+    bl pad_to_width
+
+    // espace APRÈS la colonne température
+    adrp x0, str_space
+    add  x0, x0, :lo12:str_space
     bl   copy_str
 
     // ---- Fréquence CPU (si disponible) ----
     cmp  x18, #-1
     b.eq skip_freq
-    adrp x0, str_space
-    add  x0, x0, :lo12:str_space
-    bl   copy_str
+
+    // "F:"
 .if SHOW_FREQ == 1
     adrp x0, str_freq
     add  x0, x0, :lo12:str_freq
     bl   copy_str
 .endif
+
     // couleur selon fréquence
     mov  x0, x18
     cmp  x0, #800
@@ -820,7 +949,6 @@ temp_color_done:
     b.lt freq_orange
     cmp  x0, #1800
     b.lt freq_orange_dark
-    // rouge
     adrp x0, str_red
     add  x0, x0, :lo12:str_red
     bl   copy_str
@@ -845,6 +973,7 @@ freq_orange_dark:
     add  x0, x0, :lo12:str_orange_dark
     bl   copy_str
 freq_color_done:
+
     // afficher la fréquence
     mov  x0, x18
     bl   uint_to_str
@@ -852,15 +981,26 @@ freq_color_done:
     strb w3, [x2], #1
     add  w3, w21, '0'
     strb w3, [x2], #1
-    adrp x0, str_space
-    add  x0, x0, :lo12:str_space
-    bl   copy_str
+
+    // " MHz" (ASCII pur)
     adrp x0, str_mhz
     add  x0, x0, :lo12:str_mhz
     bl   copy_str
+
+    // reset couleur
     adrp x0, str_reset
     add  x0, x0, :lo12:str_reset
     bl   copy_str
+
+    // padding colonne fréquence
+    mov x0, #COL_FREQ_WIDTH
+    bl pad_to_width
+
+//    // espace APRÈS la colonne fréquence
+//    adrp x0, str_space
+//    add  x0, x0, :lo12:str_space
+//    bl   copy_str
+
 skip_freq:
 
     // ---- Utilisation CPU (load) ----
@@ -910,6 +1050,10 @@ cpu_color_done:
     add  x0, x0, :lo12:str_reset
     bl   copy_str
 
+    // padding colonne CPU
+    mov x0, #COL_CPU_WIDTH
+    bl pad_to_width
+
     // ---- Mémoire RAM ----
     cmp  x23, #-1
     b.eq skip_ram
@@ -949,6 +1093,11 @@ ram_pct_display:
     adrp x0, str_reset
     add  x0, x0, :lo12:str_reset
     bl   copy_str
+
+    // padding colonne RAM
+    mov x0, #COL_RAM_WIDTH
+    bl pad_to_width
+
 skip_ram:
 
     // ---- Under‑voltage ----
@@ -986,6 +1135,10 @@ voltage_normal:
     bl   copy_str
 skip_voltage:
 
+    // padding colonne UV
+    mov x0, #COL_UV_WIDTH
+    bl pad_to_width
+
     // ---- Load averages ----
     cmp  x27, #1
     b.ne skip_loadavg
@@ -1013,9 +1166,10 @@ copy_1m:
     strb w4, [x2], #1
     b    copy_1m
 after_1m:
-    adrp x0, str_space
-    add  x0, x0, :lo12:str_space
-    bl   copy_str
+
+    // padding colonne LA1
+    mov x0, #COL_LA_WIDTH
+    bl pad_to_width
 
     // 5m
     adrp x0, str_color_5m
@@ -1052,9 +1206,9 @@ copy_5m:
     strb w4, [x2], #1
     b    copy_5m
 after_5m:
-    adrp x0, str_space
-    add  x0, x0, :lo12:str_space
-    bl   copy_str
+    // padding colonne LA2
+    mov x0, #COL_LA_WIDTH
+    bl pad_to_width
 
     // 15m
     adrp x0, str_color_15m
@@ -1101,6 +1255,15 @@ copy_15m:
     b    copy_15m
 after_15m:
     // pas d'espace après
+
+// padding inutil puisque fin de ligne
+// padding colonne LA3
+//mov x0, #COL_LA_WIDTH
+//bl pad_to_width
+
+//adrp x0, str_space
+//bl copy_str
+
 skip_loadavg:
 
     // ---- Fin de ligne ----
@@ -1133,4 +1296,3 @@ _exit:
     mov  x0, #0
     mov  x8, #SYS_EXIT
     svc  #0
-    
