@@ -1,8 +1,8 @@
 /*
  * ==================================================================
  * Fichier     : monitor_temp.s
- * Version     : 2.3
- * Date        : 2026-03-20
+ * Version     : 2.4
+ * Date        : 2026-03-22
  * Auteur      : /B4SH 😎
  * ------------------------------------------------------------------
  * LANGAGE     : ASSEMBLEUR AArch64 (ARMv8-A)
@@ -15,33 +15,36 @@
  * ==================================================================
  */
 
+.global _start
+
 // Options de compilation
 .equ SHOW_FREQ,     1  // 1 pour activer, 0 pour désactiver
 .equ SHOW_THERMO,   1
 
 .equ BUFFER_MEMINFO_SIZE,   128 // previously 1024
-.equ OUTPUT_BUFFER_SIZE,    256 // previously 512      
+.equ OUTPUT_BUFFER_SIZE,    256 // previously 512
+//.equ OUTPUT_BUFFER_SIZE,    512 // previously 512            
 .equ BUFFER_STAT_SIZE,      128 // previously 256
 .equ TIME_BUFFER_SIZE,      64  // previously 128
 
 // Largeurs de colonnes (en caractères visibles)
-.equ COL_TEMP_WIDTH,      6     // "103.7°C" + marge
-.equ COL_FREQ_WIDTH,      11    // "F:2400.0MHz"
-.equ COL_CPU_WIDTH,       6     // "L:100%"
-.equ COL_RAM_WIDTH,       6     // "M:100%"
-.equ COL_UV_WIDTH,        4     // "⚡️❌"
-.equ COL_LA_WIDTH,        8     // "1m:12.35"
+.equ COL_TEMP_WIDTH,        6     // "103.7°C" + marge
+.equ COL_FREQ_WIDTH,        8     // "F:2400.0MHz"
+.equ COL_CPU_WIDTH,         6     // "L:100%"
+.equ COL_RAM_WIDTH,         6     // "M:100%"
+.equ COL_UV_WIDTH,          4     // "⚡️❌"
+.equ COL_LA_WIDTH,          8     // "1m:12.35"
 
-.global _start
+// .global _start
 
 // Syscalls (constantes)
-.equ SYS_OPENAT,         56
-.equ SYS_READ,           63
-.equ SYS_WRITE,          64
-.equ SYS_CLOSE,          57
-.equ SYS_NANOSLEEP,     101
-.equ SYS_EXIT,           93
-.equ SYS_CLOCK_GETTIME, 113
+.equ SYS_OPENAT,            56
+.equ SYS_READ,              63
+.equ SYS_WRITE,             64
+.equ SYS_CLOSE,             57
+.equ SYS_NANOSLEEP,         101
+.equ SYS_EXIT,              93
+.equ SYS_CLOCK_GETTIME,     113
 
 .section .data
 
@@ -63,7 +66,7 @@ str_freq:       .asciz "F:"
 str_load:       .asciz "L:"
 str_ram:        .asciz "M:"
 str_mhz:        .asciz "MHz"
-str_thermo:     .asciz "🌡 "
+str_thermo:     .asciz " 🌡 "
 str_celsius:    .asciz "°C"
 str_ok:         .asciz "⚡️✅"
 str_undervolt:  .asciz "⚡️❌"
@@ -73,6 +76,22 @@ str_1m:         .asciz "1m:"
 str_5m:         .asciz "5m:"
 str_15m:        .asciz "15m:"
 str_utc:        .asciz " UTC]"
+
+// Chaînes ANSI 256 pour chaque fréquence CPU
+str_600MHz:   .asciz "\033[38;5;34m"
+str_700MHz:   .asciz "\033[38;5;40m"
+str_800MHz:   .asciz "\033[38;5;46m"
+str_900MHz:   .asciz "\033[38;5;82m"
+str_1000MHz:  .asciz "\033[38;5;118m"
+str_1100MHz:  .asciz "\033[38;5;154m"
+str_1200MHz:  .asciz "\033[38;5;190m"
+str_1300MHz:  .asciz "\033[38;5;184m"
+str_1400MHz:  .asciz "\033[38;5;178m"
+str_1500MHz:  .asciz "\033[38;5;172m"
+str_1600MHz:  .asciz "\033[38;5;208m"
+str_1700MHz:  .asciz "\033[38;5;202m"
+str_1800MHz:  .asciz "\033[38;5;196m"
+//str_reset:    .asciz "\033[0m"
 
 // Fichiers
 filepath_temp:
@@ -126,6 +145,25 @@ prev_total:
     .quad 0
 first_stat:
     .quad 1
+
+// Table fréquence (MHz) → pointeur vers chaîne ANSI
+.balign 8
+cpu_color_table:
+    .quad 600,  str_600MHz
+    .quad 700,  str_700MHz
+    .quad 800,  str_800MHz
+    .quad 900,  str_900MHz
+    .quad 1000, str_1000MHz
+    .quad 1100, str_1100MHz
+    .quad 1200, str_1200MHz
+    .quad 1300, str_1300MHz
+    .quad 1400, str_1400MHz
+    .quad 1500, str_1500MHz
+    .quad 1600, str_1600MHz
+    .quad 1700, str_1700MHz
+    .quad 1800, str_1800MHz
+cpu_color_table_end:
+
 
 .section .text
 
@@ -869,6 +907,10 @@ clear_outbuf:
 
     // ---- Température CPU ----
 
+// // Ajout d'un espace avant le premier champ
+//    mov  w3, ' '
+//    strb w3, [x2], #1
+
     // couleur selon température
     mov  x0, x6
     cmp  x0, #50
@@ -940,39 +982,9 @@ temp_color_done:
 .endif
 
     // couleur selon fréquence
-    mov  x0, x18
-    cmp  x0, #800
-    b.lt freq_green
-    cmp  x0, #1200
-    b.lt freq_yellow
-    cmp  x0, #1500
-    b.lt freq_orange
-    cmp  x0, #1800
-    b.lt freq_orange_dark
-    adrp x0, str_red
-    add  x0, x0, :lo12:str_red
-    bl   copy_str
-    b    freq_color_done
-freq_green:
-    adrp x0, str_green
-    add  x0, x0, :lo12:str_green
-    bl   copy_str
-    b    freq_color_done
-freq_yellow:
-    adrp x0, str_yellow
-    add  x0, x0, :lo12:str_yellow
-    bl   copy_str
-    b    freq_color_done
-freq_orange:
-    adrp x0, str_orange
-    add  x0, x0, :lo12:str_orange
-    bl   copy_str
-    b    freq_color_done
-freq_orange_dark:
-    adrp x0, str_orange_dark
-    add  x0, x0, :lo12:str_orange_dark
-    bl   copy_str
-freq_color_done:
+    // couleur via table
+    bl   select_cpu_color     // x18 = MHz → x0 = pointeur couleur
+    bl   copy_str             // applique la couleur dans outbuf
 
     // afficher la fréquence
     mov  x0, x18
@@ -982,7 +994,16 @@ freq_color_done:
     add  w3, w21, '0'
     strb w3, [x2], #1
 
-    // " MHz" (ASCII pur)
+    // padding colonne fréquence
+    mov x0, #COL_FREQ_WIDTH
+    bl pad_to_width
+
+    // espace APRÈS la colonne fréquence
+    adrp x0, str_space
+    add  x0, x0, :lo12:str_space
+    bl   copy_str
+
+    // "MHz" (ASCII pur)
     adrp x0, str_mhz
     add  x0, x0, :lo12:str_mhz
     bl   copy_str
@@ -991,15 +1012,6 @@ freq_color_done:
     adrp x0, str_reset
     add  x0, x0, :lo12:str_reset
     bl   copy_str
-
-    // padding colonne fréquence
-    mov x0, #COL_FREQ_WIDTH
-    bl pad_to_width
-
-//    // espace APRÈS la colonne fréquence
-//    adrp x0, str_space
-//    add  x0, x0, :lo12:str_space
-//    bl   copy_str
 
 skip_freq:
 
@@ -1289,10 +1301,39 @@ skip_loadavg:
 
     b loop
 
+// ------------------------------------------------------
+// select_cpu_color : x18 = MHz → x0 = pointeur couleur
+// ------------------------------------------------------
+// Entrée : x18 = fréquence en MHz
+// Sortie : x0  = pointeur vers chaîne ANSI
+
+select_cpu_color:
+    adrp x3, cpu_color_table
+    add  x3, x3, :lo12:cpu_color_table
+    adrp x1, cpu_color_table_end
+    add  x1, x1, :lo12:cpu_color_table_end
+
+1:  cmp  x3, x1
+    b.ge 3f                       // Fin de table -> fallback rouge
+
+    ldr  x0, [x3]                 // x0 = fréquence seuil de la table
+    cmp  x18, x0
+    blt  2f                       // Si freq actuelle < seuil, on a trouvé la couleur
+
+    add  x3, x3, #16              // Entrée suivante (2 quads = 16 octets)
+    b    1b
+
+2:  ldr  x0, [x3, #8]             // Charge le pointeur str_XXXXMHz
+    ret
+
+3:  adrp x0, str_red              // Fallback si > 1800MHz
+    add  x0, x0, :lo12:str_red
+    ret
+
 // -------------------------------------------------------------------
 // Fin du programme
 // -------------------------------------------------------------------
-_exit:
+_exit: // jamais exécuté ici - le programme s'interrompt via ctrl-C
     mov  x0, #0
     mov  x8, #SYS_EXIT
     svc  #0
