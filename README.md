@@ -2,6 +2,7 @@
 
 Un moniteur système complet, écrit **entièrement en assembleur ARMv8‑A (AArch64)**, sans libc, sans dépendances, utilisant uniquement les **syscalls Linux**.  
 Ce projet a été conçu **dans un but didactique**, pour explorer l’assembleur ARM64 sur Raspberry Pi 4B — et il a évolué en un véritable tableau de bord système en temps réel.
+Depuis la version 2.4, le moniteur intègre une coloration dynamique de la fréquence CPU basée sur une table ANSI 256, ainsi qu’une refactorisation majeure améliorant la lisibilité et la stabilité du code.
 
 ---
 
@@ -27,7 +28,8 @@ Le programme affiche en continu :
 ## 🚀 Fréquence CPU
 - Lecture : `/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq`
 - Conversion kHz → MHz (avec décimale)
-- Couleur dynamique selon la fréquence
+- Coloration dynamique via une table ANSI 256 (nouveau en v2.4)  
+  Sélection automatique via la routine select_cpu_color
 
 ## ⚡ État électrique (under‑voltage)
 - Lecture : `/sys/devices/platform/soc/soc:firmware/get_throttled`
@@ -82,6 +84,10 @@ Elles montrent la progression pédagogique du moniteur système en assembleur AR
 [![Demo v1.9](https://img.youtube.com/vi/Y2lfMdMY5QY/0.jpg)](https://youtu.be/Y2lfMdMY5QY)
 
 ➡️ https://youtu.be/Y2lfMdMY5QY
+
+---
+
+## 🔹 Version 2.4 — Coloration CPU refactorisée (2026‑03‑22)
 
 ---
 
@@ -194,7 +200,7 @@ strip monitor-temp-ASM
 ## Exemple de sortie
 
 ```bash
-[20:09:08 UTC] 🌡️ 34.5°C F:600.0 MHz L:0% M:20% ⚡️✅ 1m:0.00 5m:0.00 15m:0.00
+[18:24:51 UTC] 🌡 44.3°C F:1800.0 MHz L:77%  M:20%  ⚡️✅  1m:3.51 5m:1.58 15m:1.01
 ```
 
 ## 🎯 Objectif pédagogique
