@@ -1,7 +1,7 @@
 /*
  * ==================================================================
  * Fichier     : monitor_temp.s
- * Version     : 2.5b
+ * Version     : 2.5c
  * Date        : 2026-03-23
  * Auteur      : /B4SH 😎
  * ------------------------------------------------------------------
@@ -99,14 +99,24 @@
 .section .data
 // ---------------------------------------------------------------
 
-// Codes couleur ANSI
-str_cyan:           .asciz "\033[36m"
-str_blue:           .asciz "\033[34m"
-str_green:          .asciz "\033[32m"
-str_yellow:         .asciz "\033[33m"
-str_orange:         .asciz "\033[38;5;208m"
-str_orange_dark:    .asciz "\033[38;5;202m"
-str_red:            .asciz "\033[31m"
+////  Codes couleur ANSI
+//str_cyan:           .asciz "\033[36m"
+//str_blue:           .asciz "\033[34m"
+//str_green:          .asciz "\033[32m"
+//str_yellow:         .asciz "\033[33m"
+//str_orange:         .asciz "\033[38;5;208m"
+//str_orange_dark:    .asciz "\033[38;5;202m"
+//str_red:            .asciz "\033[31m"
+//str_reset:          .asciz "\033[0m"
+
+// Codes couleur ANSI - Version "Vivid" (Vive)
+str_cyan:           .asciz "\033[1;36m"        // Cyan vif (Gras)
+str_blue:           .asciz "\033[1;34m"        // Bleu profond saturé
+str_green:          .asciz "\033[1;32m"        // Vert électrique
+str_yellow:         .asciz "\033[1;33m"        // Jaune pur (moins "boue")
+str_orange:         .asciz "\033[38;5;214m"    // Orange plus lumineux (Orange1)
+str_orange_dark:    .asciz "\033[38;5;208m"    // Orange vif (plus saturé que 202)
+str_red:            .asciz "\033[1;31m"        // Rouge alerte
 str_reset:          .asciz "\033[0m"
 
 .equ str_color_1m,   str_blue
@@ -131,23 +141,30 @@ str_utc:            .asciz " UTC]"
 str_na:             .asciz "--"     // affiché si métrique indisponible
 
 // Chaînes ANSI 256 (vert → rouge) par palier de fréquence CPU
-str_600MHz:         .asciz "\033[38;5;34m"    // vert foncé
-str_700MHz:         .asciz "\033[38;5;40m"    // vert
-str_800MHz:         .asciz "\033[38;5;46m"    // vert clair
-str_900MHz:         .asciz "\033[38;5;82m"    // vert-jaune
-str_1000MHz:        .asciz "\033[38;5;118m"   // jaune-vert
-str_1100MHz:        .asciz "\033[38;5;154m"   // jaune vif
-str_1200MHz:        .asciz "\033[38;5;190m"   // jaune clair
-str_1300MHz:        .asciz "\033[38;5;220m"   // jaune-orangé
-str_1400MHz:        .asciz "\033[38;5;214m"   // orange
-str_1500MHz:        .asciz "\033[38;5;208m"   // orange soutenu
-str_1600MHz:        .asciz "\033[38;5;202m"   // rouge-orangé
-str_1700MHz:        .asciz "\033[38;5;160m"   // rouge sombre (ma préférence pour cet ordre)
-str_1800MHz:        .asciz "\033[38;5;196m"   // rouge vif (ma préférence puor cet ordre)
+// Version Haute Visibilité (Saturée & GRAS = préfixé de "1")
+str_600MHz:         .asciz "\033[1;38;5;46m"    // Vert électrique Bold
+str_700MHz:         .asciz "\033[1;38;5;47m"    // Vert printemps Bold
+str_800MHz:         .asciz "\033[1;38;5;48m"    // Vert menthe Bold
+str_900MHz:         .asciz "\033[1;38;5;83m"    // Vert chartreuse Bold
+str_1000MHz:        .asciz "\033[1;38;5;119m"   // Jaune-vert néon Bold
+str_1100MHz:        .asciz "\033[1;38;5;155m"   // Jaune acide Bold
+str_1200MHz:        .asciz "\033[1;38;5;191m"   // Jaune pur brillant Bold
+str_1300MHz:        .asciz "\033[1;38;5;226m"   // Jaune d'or saturé Bold
+str_1400MHz:        .asciz "\033[1;38;5;214m"   // Orange vif Bold
+str_1500MHz:        .asciz "\033[1;38;5;208m"   // Orange pur Bold
+str_1600MHz:        .asciz "\033[1;38;5;202m"   // Orange-rouge Bold
+//str_1700MHz:        .asciz "\033[1;38;5;124m"   // Rouge sombre profond Bold
+//str_1800MHz:        .asciz "\033[1;38;5;196m"   // Rouge pur "vif" Bold
+str_1700MHz:        .asciz "\033[1;38;5;196m"   // Rouge pur "vif" Bold (ex 1800)
+str_1800MHz:        .asciz "\033[1;5;38;5;196m" // Rouge pur "vif" Bold ET CLIGNOTANT
 
 // Table de pointeurs de couleurs indexée par palier 100 MHz
 // index = (freq_MHz - 600) / 100  ∈ [0..12]
-.align 3
+// Sur ARM64, un ldr x0, [x3, x9, lsl #3] exige que l’adresse soit naturellement alignée sur 8 octets.
+//
+// L’ABI AArch64 impose que les objets contenant des pointeurs soient alignés sur 8.
+    .align 3  // → aligner sur 2³ = 8 octets
+//  .balign 8 // → aligner explicitement sur 8 octets [alternative possible]
 cpu_color_table:
         .quad   str_600MHz      // index 0  → 600 MHz
         .quad   str_700MHz      // index 1  → 700 MHz
