@@ -1,7 +1,7 @@
 /*
  * ==================================================================
  * Fichier     : monitor_temp.s
- * Version     : 2.5a
+ * Version     : 2.5b
  * Date        : 2026-03-23
  * Auteur      : /B4SH 😎
  * ------------------------------------------------------------------
@@ -118,7 +118,7 @@ str_freq:           .asciz "F:"
 str_load:           .asciz "L:"
 str_ram:            .asciz "M:"
 str_mhz:            .asciz "MHz"
-str_thermo:         .asciz "🌡:"
+str_thermo:         .asciz "🌡 "
 str_celsius:        .asciz "°C"
 str_ok:             .asciz "⚡️✅"
 str_undervolt:      .asciz "⚡️❌"
@@ -130,37 +130,38 @@ str_15m:            .asciz "15m:"
 str_utc:            .asciz " UTC]"
 str_na:             .asciz "--"     // affiché si métrique indisponible
 
-// Couleurs ANSI 256 par palier de fréquence CPU
-str_600MHz:         .asciz "\033[38;5;34m"
-str_700MHz:         .asciz "\033[38;5;40m"
-str_800MHz:         .asciz "\033[38;5;46m"
-str_900MHz:         .asciz "\033[38;5;82m"
-str_1000MHz:        .asciz "\033[38;5;118m"
-str_1100MHz:        .asciz "\033[38;5;154m"
-str_1200MHz:        .asciz "\033[38;5;190m"
-str_1300MHz:        .asciz "\033[38;5;184m"
-str_1400MHz:        .asciz "\033[38;5;178m"
-str_1500MHz:        .asciz "\033[38;5;172m"
-str_1600MHz:        .asciz "\033[38;5;208m"
-str_1700MHz:        .asciz "\033[38;5;196m"
-str_1800MHz:        .asciz "\033[38;5;202m"
+// Chaînes ANSI 256 (vert → rouge) par palier de fréquence CPU
+str_600MHz:         .asciz "\033[38;5;34m"    // vert foncé
+str_700MHz:         .asciz "\033[38;5;40m"    // vert
+str_800MHz:         .asciz "\033[38;5;46m"    // vert clair
+str_900MHz:         .asciz "\033[38;5;82m"    // vert-jaune
+str_1000MHz:        .asciz "\033[38;5;118m"   // jaune-vert
+str_1100MHz:        .asciz "\033[38;5;154m"   // jaune vif
+str_1200MHz:        .asciz "\033[38;5;190m"   // jaune clair
+str_1300MHz:        .asciz "\033[38;5;220m"   // jaune-orangé
+str_1400MHz:        .asciz "\033[38;5;214m"   // orange
+str_1500MHz:        .asciz "\033[38;5;208m"   // orange soutenu
+str_1600MHz:        .asciz "\033[38;5;202m"   // rouge-orangé
+str_1700MHz:        .asciz "\033[38;5;160m"   // rouge sombre (ma préférence pour cet ordre)
+str_1800MHz:        .asciz "\033[38;5;196m"   // rouge vif (ma préférence puor cet ordre)
 
-/*
-// Couleurs ANSI 256 par palier de fréquence CPU
-str_600MHz:         .asciz "\033[38;5;34m"
-str_700MHz:         .asciz "\033[38;5;40m"
-str_800MHz:         .asciz "\033[38;5;46m"
-str_900MHz:         .asciz "\033[38;5;82m"
-str_1000MHz:        .asciz "\033[38;5;118m"
-str_1100MHz:        .asciz "\033[38;5;154m"
-str_1200MHz:        .asciz "\033[38;5;190m"
-str_1300MHz:        .asciz "\033[38;5;184m"
-str_1400MHz:        .asciz "\033[38;5;178m"
-str_1500MHz:        .asciz "\033[38;5;172m"
-str_1600MHz:        .asciz "\033[38;5;196m"
-str_1700MHz:        .asciz "\033[38;5;208m"
-str_1800MHz:        .asciz "\033[38;5;202m"
-*/
+// Table de pointeurs de couleurs indexée par palier 100 MHz
+// index = (freq_MHz - 600) / 100  ∈ [0..12]
+.align 3
+cpu_color_table:
+        .quad   str_600MHz      // index 0  → 600 MHz
+        .quad   str_700MHz      // index 1  → 700 MHz
+        .quad   str_800MHz      // index 2  → 800 MHz
+        .quad   str_900MHz      // index 3  → 900 MHz
+        .quad   str_1000MHz     // index 4  → 1000 MHz
+        .quad   str_1100MHz     // index 5  → 1100 MHz
+        .quad   str_1200MHz     // index 6  → 1200 MHz
+        .quad   str_1300MHz     // index 7  → 1300 MHz
+        .quad   str_1400MHz     // index 8  → 1400 MHz
+        .quad   str_1500MHz     // index 9  → 1500 MHz
+        .quad   str_1600MHz     // index 10 → 1600 MHz
+        .quad   str_1700MHz     // index 11 → 1700 MHz
+        .quad   str_1800MHz     // index 12 → 1800 MHz
 
 // Chemins des fichiers système
 filepath_temp:      .asciz "/sys/class/thermal/thermal_zone0/temp"
@@ -211,24 +212,6 @@ fd_table:
     .quad -1    // FD_IDX_LOADAVG
     .quad -1    // FD_IDX_STAT
     .quad -1    // FD_IDX_MEMINFO
-
-// Table fréquence (MHz) → pointeur vers chaîne ANSI
-.balign 8
-cpu_color_table:
-    .quad  600, str_600MHz
-    .quad  700, str_700MHz
-    .quad  800, str_800MHz
-    .quad  900, str_900MHz
-    .quad 1000, str_1000MHz
-    .quad 1100, str_1100MHz
-    .quad 1200, str_1200MHz
-    .quad 1300, str_1300MHz
-    .quad 1400, str_1400MHz
-    .quad 1500, str_1500MHz
-    .quad 1600, str_1600MHz
-    .quad 1700, str_1700MHz
-    .quad 1800, str_1800MHz
-cpu_color_table_end:
 
 // ---------------------------------------------------------------
 .section .text
@@ -549,30 +532,29 @@ pad_to_width:
 
 // ================================================================
 // select_cpu_color : fréquence (x18, MHz) → pointeur ANSI (x0)
+// Utilise cpu_color_table (pointeurs ANSI par pas de 100 MHz)
 // Préserve x1, x2
 // ================================================================
 select_cpu_color:
-    stp  x1, lr, [sp, #-16]!
-    adrp x3, cpu_color_table
-    add  x3, x3, :lo12:cpu_color_table
-    adrp x1, cpu_color_table_end
-    add  x1, x1, :lo12:cpu_color_table_end
-.Lscc_loop:
-    cmp  x3, x1
-    b.ge .Lscc_red
-    ldr  x0, [x3]
-    cmp  x18, x0
-    blt  .Lscc_found
-    add  x3, x3, #16
-    b    .Lscc_loop
-.Lscc_found:
-    ldr  x0, [x3, #8]
-    ldp  x1, lr, [sp], #16
-    ret
-.Lscc_red:
-    adrp x0, str_red
-    add  x0, x0, :lo12:str_red
-    ldp  x1, lr, [sp], #16
+    stp     x1, lr, [sp, #-16]!
+
+    // index = (freq - 600) / 100
+    sub     x9, x18, #600
+    mov     x3, #100
+    sdiv    x9, x9, x3
+
+    // clamp 0..12
+    cmp     x9, #0
+    csel    x9, xzr, x9, lt
+    cmp     x9, #12
+    csel    x9, x9, x9, gt
+
+    // load pointer
+    adrp    x3, cpu_color_table
+    add     x3, x3, :lo12:cpu_color_table
+    ldr     x0, [x3, x9, lsl #3]
+
+    ldp     x1, lr, [sp], #16
     ret
 
 // ================================================================
