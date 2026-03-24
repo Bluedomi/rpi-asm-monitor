@@ -1,7 +1,7 @@
 /*
  * ==================================================================
  * Fichier     : monitor_temp.s
- * Version     : 2.5c
+ * Version     : 2.5d (alias super colors)
  * Date        : 2026-03-23
  * Auteur      : /B4SH 😎
  * ------------------------------------------------------------------
@@ -178,7 +178,7 @@ cpu_color_table:
         .quad   str_1500MHz     // index 9  → 1500 MHz
         .quad   str_1600MHz     // index 10 → 1600 MHz
         .quad   str_1700MHz     // index 11 → 1700 MHz
-        .quad   str_1800MHz     // index 12 → 1800 MHz
+        .quad   str_1800MHz     // index 12 → 1800 MHz - 13ème entrée
 
 // Chemins des fichiers système
 filepath_temp:      .asciz "/sys/class/thermal/thermal_zone0/temp"
