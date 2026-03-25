@@ -400,7 +400,7 @@ read_fd_persistent:
 //   -1  = pread64 indisponible → fallback lseek + read
 //   67  = pread64 disponible   → 1 seul syscall
 // ------------------------------------------------------------------
-.if SYSPREAD64 != 67
+.if SYS_PREAD64 != 67
 // lseek + read (2 sys call) 👍 ✔️
     mov  x1, #0
     mov  x2, #SEEK_SET
