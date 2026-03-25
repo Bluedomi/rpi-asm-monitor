@@ -1,30 +1,85 @@
 /*
  * ==================================================================
  * Fichier     : monitor_temp.s
- * Version     : 2.6
- * Date        : 2026-03-24
+ * Version     : 2.7
+ * Date        : 2026-03-25
  * Auteur      : /B4SH 😎
  * ------------------------------------------------------------------
  * LANGAGE     : ASSEMBLEUR AArch64 (ARMv8-A)
  * DESCRIPTION : Monitoring système temps réel pour Raspberry Pi 4B
- *               Version refactorisée v2.6 :
- *               - pct_to_color : routine générique de colorisation
- *                 basée sur cpu_color_table (0-100% → index 0-12)
- *                 remplace tous les blocs cmp/b.ge/adrp de couleur
- *                 pour température, CPU% et RAM%
- *               - select_cpu_color réécrit en tail call via pct_to_color
- *               - correction du clamp haut dans select_cpu_color
- *                 (csel x9,x9,x9,gt v2.5 était un no-op silencieux)
- *               - suppression des constantes TEMP/CPU/RAM_WARN/HOT/
- *                 CRITICAL devenues inutiles
- *               - TEMP_MAX ajouté (valeur de référence pour la
- *                 normalisation en pourcentage de la température)
- * Compilation :
- * $ as -o monitor_temp.o monitor_temp.s
- * $ gcc -nostdlib -static -o monitor-temp-ASM monitor_temp.o
- * $ strip monitor-temp-ASM
+ *
+ * Nouveautés v2.7 :
+ *   - Séparation claire des sections .data et .rodata.
+ *   - Ajout d’un message d’en‑tête enrichi (version, auteur, date
+ *     et heure de compilation via __DATE__ / __TIME__).
+ *   - Passage à la compilation via gcc + préprocesseur C, tout en
+ *     conservant l’extension historique .s du projet.
+ *   - Possibilité d’injecter des constantes (#define, -D…) pour
+ *     gérer version, auteur, options de build, etc.
+ *   - Introduction d’un mécanisme propre et purement assembleur
+ *     pour activer ou désactiver l’usage du syscall pread64 :
+ *
+ *         .equ SYS_PREAD64, -1   → pread64 non utilisé
+ *         .equ SYS_PREAD64, 67   → pread64 activé
+ *
+ *     Lorsque SYS_PREAD64 = 67, le code utilise pread64 (1 seul
+ *     syscall, plus optimal). Dans le cas contraire, le programme
+ *     bascule automatiquement vers le fallback lseek + read (2
+ *     syscalls).
+ *
+ * Optimisations du calcul de température CPU :
+ *   - Code générique pour toute valeur de TEMP_MAX.
+ *   - Optimisation spécifique lorsque TEMP_MAX = 80 :
+ *       → calcul du pourcentage sans division (temp + temp>>2).
+ *   - Optimisation maximale activable via :
+ *         .equ MAX80_ULTRA_OPTIMIZED, 1
+ *     permettant d’exploiter pleinement le cas TEMP_MAX = 80.
+ *   - Pour toute autre valeur, bascule automatique vers la version
+ *     générique (division classique).
+ *
+ * ------------------------------------------------------------------
+ * ⚠️  Ancienne méthode de compilation des versions précédentes,
+ *     rappelée uniquement pour mémoire :
+ *
+ *   $ as -o monitor_temp.o monitor_temp.s
+ *   $ gcc -nostdlib -static -o monitor-temp-ASM monitor_temp.o
+ *   $ strip monitor-temp-ASM
+ *
+ * Cette méthode NE FONCTIONNE PLUS avec ce fichier source, car :
+ *   - le code utilise désormais le préprocesseur C (#define, __DATE__,
+ *     __TIME__, concaténation de chaînes…),
+ *   - l’assembleur pur `as` ne reconnaît pas ces directives.
+ *
+ * ------------------------------------------------------------------
+ * ✔️  Méthode de compilation recommandée
+ *     gcc + préprocesseur C + strip agressif 🗜
+ *
+ *   Compilation minimale (strip intégré au linkage) :
+ *
+ *     $ gcc -x assembler-with-cpp -nostdlib -static \
+ *           -Wl,--strip-all \
+ *           monitor_temp.s -o monitor-temp-ASM
+ *
+ *   Variante équivalente (strip externe maximal) :
+ *
+ *     $ gcc -x assembler-with-cpp -nostdlib -static monitor_temp.s \
+ *           -o monitor-temp-ASM
+ *     $ strip --strip-all --remove-section=.comment \
+ *             --remove-section=.note* \
+ *             monitor-temp-ASM
+ *
+ * Ces deux méthodes produisent un binaire minimal (~5.8 kB),
+ * idéal pour un outil système léger et autonome.
+ *
+ * L’option -x assembler-with-cpp force l’utilisation du préprocesseur
+ * C même si le fichier conserve l’extension .s, garantissant ainsi la
+ * compatibilité avec les versions précédentes du repository.
+ *
  * ==================================================================
  */
+
+#define RELEASE "2.7"
+#define AUTHOR "Dominique, aka /B4SH 😎"
 
 .global _start
 
@@ -33,6 +88,33 @@
 // ---------------------------------------------------------------
 .equ SHOW_FREQ,             1
 .equ SHOW_THERMO,           1
+.equ MAX80_ULTRA_OPTIMIZED, 1
+
+// ---------------------------------------------------------------
+// Normalisation de la température en pourcentage
+// ---------------------------------------------------------------
+// La température brute est convertie en % via TEMP_MAX, puis
+// transmise à pct_to_color (même logique que CPU/RAM).
+//
+// Le code est générique : TEMP_MAX peut être ajusté librement.
+// Lorsque TEMP_MAX = 80, une routine optimisée est utilisée
+// (pas de udiv). Pour d’autres valeurs, le code bascule
+// automatiquement sur la version générique.
+//
+// Une optimisation maximale peut être activée via :
+//     .equ MAX80_ULTRA_OPTIMIZED, 1
+// Active l’optimisation maximale spécifique au cas TEMP_MAX = 80.
+//
+// 🔥 85°C = seuil officiel de throttling du SoC Raspberry Pi 4B.
+// Au‑delà, le firmware réduit automatiquement la fréquence CPU.
+// Références :
+//   https://raspberrytips.com/raspberry-pi-temperature
+//   https://www.raspberrypi.com/products/raspberry-pi-4-model-b/specifications/
+//
+// TEMP_MAX définit le seuil interne de normalisation.
+// 80°C = zone critique → affichage rouge clignotant.
+// ---------------------------------------------------------------
+.equ TEMP_MAX,              80      // °C
 
 // ---------------------------------------------------------------
 // Tailles de buffers
@@ -56,13 +138,6 @@
 .equ COL_LA_WIDTH,          8       // "1m:12.35"
 
 // ---------------------------------------------------------------
-// Valeurs de référence pour la normalisation en pourcentage
-// ---------------------------------------------------------------
-// La température est normalisée sur TEMP_MAX pour obtenir un %
-// avant d'être passée à pct_to_color (même logique que CPU/RAM).
-.equ TEMP_MAX,              100     // °C : 100°C = rouge clignotant
-
-// ---------------------------------------------------------------
 // Syscalls
 // ---------------------------------------------------------------
 .equ SYS_OPENAT,            56
@@ -73,6 +148,7 @@
 .equ SYS_NANOSLEEP,         101
 .equ SYS_EXIT,              93
 .equ SYS_CLOCK_GETTIME,     113
+.equ SYS_PREAD64,           67 // ou -1 pour éviter syscall PREAD64
 
 .equ AT_FDCWD,              -100
 .equ SEEK_SET,              0
@@ -92,6 +168,19 @@
 // ---------------------------------------------------------------
 .section .data
 // ---------------------------------------------------------------
+
+.section .rodata
+
+// Message d'en-tête
+header_text:        .ascii "\n\033[1;36mmonitor-temp-ASM\033[1;32m v" RELEASE"\n"                       
+                    .ascii "\033[1;34mBuild on: " __DATE__ " at " __TIME__ "\n"
+                    .ascii "Author: " AUTHOR "\n"
+                    .ascii "Real-time performance monitor for the Raspberry Pi 4B,\n"
+                    .ascii "written entirely in ARMv8‑A assembly (Linux userland).\033[0m\n"
+                    .ascii "Metrics:\n🌡 Temp | F: CPU Frequency | L: CPU% | M: RAM% | ⚡ Under-voltage | Load Averages\n"
+                    .asciz  "\033[1;31mPress Ctrl‑C to terminate.\n\n"
+
+// .ascii "\n\033[1;36mmonitor-temp-ASM\033[1;32m v"RELEASE\033[0m\n"
 
 // Codes couleur ANSI - Version "Vivid"
 str_cyan:           .asciz "\033[1;36m"
@@ -178,6 +267,8 @@ needle_cpu:         .asciz "cpu "
 needle_memtotal:    .asciz "MemTotal:"
 needle_memavail:    .asciz "MemAvailable:"
 
+.section .data
+
 // Buffers de lecture
 buffer:         .space BUFFER_SIZE
 buffer_thr:     .space BUFFER_THR_SIZE
@@ -218,6 +309,25 @@ fd_table:
 // ---------------------------------------------------------------
 .section .text
 // ---------------------------------------------------------------
+
+// ================================================================
+// print_str : écrit une chaîne ASCIIZ sur stdout (fd 1)
+// Entrée : x0 = adresse de la chaîne terminée par 0
+// Utilise : x1, x2, x8 (registres scratch)
+// ================================================================
+print_str:
+    mov  x1, x0          // pointeur de la chaîne
+    mov  x2, #0          // longueur à calculer
+.Llen:
+    ldrb w3, [x1, x2]    // lire un octet
+    cbz  w3, .Lwrite     // fin de chaîne ?
+    add  x2, x2, #1      // incrémenter longueur
+    b    .Llen
+.Lwrite:
+    mov  x0, #STDOUT     // 1 = sortie standard
+    mov  x8, #SYS_WRITE  // 64 = sys_write
+    svc  0
+    ret
 
 // ================================================================
 // copy_str : copie une chaîne ASCIIZ de x0 vers (x2), met à jour x2
@@ -284,6 +394,14 @@ read_fd_persistent:
     blt  .Lrfp_err
 
     mov  x0, x3
+
+// ------------------------------------------------------------------
+// Configuration du syscall pread64
+//   -1  = pread64 indisponible → fallback lseek + read
+//   67  = pread64 disponible   → 1 seul syscall
+// ------------------------------------------------------------------
+.if SYSPREAD64 != 67
+// lseek + read (2 sys call) 👍 ✔️
     mov  x1, #0
     mov  x2, #SEEK_SET
     mov  x8, #SYS_LSEEK
@@ -294,6 +412,17 @@ read_fd_persistent:
     mov  x2, x5
     mov  x8, #SYS_READ
     svc  0
+.else
+// usage de SYS_PREAD64 plus optimal
+// pread 1 seul sys call 🔥 ✅
+    mov  x0, x3        // fd
+    mov  x1, x4        // buffer
+    mov  x2, x5        // size
+    mov  x3, #0        // offset
+    mov  x8, #SYS_PREAD64
+    svc  0
+.endif
+
     cmp  x0, #0
     blt  .Lrfp_err
 
@@ -653,6 +782,11 @@ open_all_fds:
 // Programme principal
 // ================================================================
 _start:
+
+    adrp x0, header_text // affiche les infos du header
+    add  x0, x0, :lo12:header_text
+    bl   print_str
+
     bl   open_all_fds
 
     // x28 = sentinelle outbuf (borne haute, constante tout au long)
@@ -1001,13 +1135,59 @@ mem_skip:
     mov  x6, x24
     mov  x9, x25
 
-    // ---- Température CPU ----
-    // pct = temp * 100 / TEMP_MAX  (TEMP_MAX = 100 → pct = temp)
+.if TEMP_MAX == 80
+    // ---- Température CPU (Optimisation 80 sans division) ----
     mov  x1, x2
-    mov  x0, x6
-    // Optimisation : TEMP_MAX = 100 → pct_to_color(temp) directement
+
+    .if MAX80_ULTRA_OPTIMIZED != 1
+
+    .warning "---- Température CPU (calcul 80°C sans division) ----"
+
+    // Objectif : pct = temp * 1.25
+    // temp + (temp >> 2)  =>  temp + temp/4  => 1.25 * temp
+    mov  x0, x24              // x0 = température entière (ex: 40)
+    lsr  x13, x0, #2          // x13 = 40 >> 2 = 10
+    add  x0, x0, x13          // x0 = 40 + 10 = 50 (%)
+    
+    // Note : Si temp = 80, x0 = 80 + 20 = 100 (%) -> Parfait.
+
     bl   pct_to_color
     bl   copy_str
+    .else
+
+    .warning "---- Température CPU (calcul 80°C ultra-optimisé) ----"
+// ---- Température CPU (Optimisation ultime pour MAX 80) ----
+// Instruction unique : add x0, x24, x24, lsr #2
+// est traitée par le processeur en un seul cycle d'horloge
+    mov  x1, x2               // x2 contient le pointeur actuel dans outbuf
+    
+    // Calcul du pourcentage : pct = temp * 1.25
+    // En ARM64, cette instruction fait : x0 = x24 + (x24 >> 2)
+    // Si temp = 80 : 80 + (80/4) = 100% (Rouge clignotant)
+    // Si temp = 40 : 40 + (40/4) = 50%  (Jaune brillant)
+    add  x0, x24, x24, lsr #2
+    
+    // Application de la couleur basée sur le pourcentage calculé
+    bl   pct_to_color         
+    bl   copy_str
+    .endif
+
+.else
+    // ---- Température CPU (TOUTE VALEUR) ----
+    .warning "---- Température CPU (TOUTE VALEUR) ----"
+
+    mov  x1, x2
+    
+    // Calcul du pourcentage réel basé sur TEMP_MAX
+    mov  x0, x24          // x24 contient les degrés entiers (ex: 45)
+    mov  x13, #100
+    mul  x0, x0, x13      // x0 = 4500
+    mov  x13, #TEMP_MAX   // Utilise enfin la constante .equ
+    udiv x0, x0, x13      // x0 = 4500 / 50 = 90 (%)
+    
+    bl   pct_to_color     // Maintenant x0 contient 90, donc du rouge
+    bl   copy_str
+.endif
 
 .if SHOW_THERMO == 1
     adrp x0, str_thermo
@@ -1259,3 +1439,4 @@ _exit:
     mov  x0, #0
     mov  x8, #SYS_EXIT
     svc  0
+
