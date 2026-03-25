@@ -4,6 +4,8 @@ Un moniteur système complet, écrit **entièrement en assembleur ARMv8‑A (AAr
 Ce projet a été conçu **dans un but didactique**, pour explorer l’assembleur ARM64 sur Raspberry Pi 4B — et il a évolué en un véritable tableau de bord système en temps réel.
 Depuis la version 2.4, le moniteur intègre une coloration dynamique de la fréquence CPU basée sur une table ANSI 256, ainsi qu’une refactorisation majeure améliorant la lisibilité et la stabilité du code.
 
+DRAFT : Cette documentation doit être mise à jour afin de refléter les améliorations présentes dans la version actuelle (v2.7).
+
 ---
 
 # ✨ Fonctionnalités principales
@@ -88,6 +90,10 @@ Elles montrent la progression pédagogique du moniteur système en assembleur AR
 ---
 
 ## 🔹 Version 2.4 — Coloration CPU refactorisée (2026‑03‑22)
+
+---
+
+## 🔹 Version 2.7 — Optimisations diverses et migration de as vers gcc (2026‑03‑25)
 
 ---
 
